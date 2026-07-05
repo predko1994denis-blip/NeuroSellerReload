@@ -1,0 +1,19 @@
+{
+  "name": "neurosellerreload",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "pdf-parse": "^2.4.5",
+    "postgres": "^3.4.9"
+  }
+}
