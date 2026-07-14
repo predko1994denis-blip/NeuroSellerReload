@@ -37,4 +37,21 @@ export class BotRepository {
     `;
     return row!;
   }
+
+  async updateRagEnabled(id: number, ragEnabled: boolean): Promise<Bot> {
+    const [row] = await sql<Bot[]>`
+      UPDATE bots SET rag_enabled = ${ragEnabled} WHERE id = ${id} RETURNING *
+    `;
+    return row!;
+  }
+
+  // Список non-goals сценария (с чем бот НЕ помогает) — для справки: такие вопросы она пропускает,
+  // их ведёт шаг через блок [ВНЕ ЗАДАЧ]. Пусто, если сценария/списка нет.
+  async getNonGoals(botId: number): Promise<string[]> {
+    const [row] = await sql<{ non_goals: unknown }[]>`
+      SELECT non_goals FROM scenarios WHERE bot_id = ${botId} LIMIT 1
+    `;
+    const ng = row?.non_goals;
+    return Array.isArray(ng) ? ng.filter((g): g is string => typeof g === "string" && g.trim().length > 0) : [];
+  }
 }

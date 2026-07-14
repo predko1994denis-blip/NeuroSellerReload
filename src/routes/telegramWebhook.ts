@@ -27,8 +27,12 @@ export async function handleTelegramWebhook(
   // встают в общую очередь обработки чата и блокируют все следующие сообщения того же чата
   // (например, /clear), пока не перестанут падать.
   try {
-    const responseText = await messageHandler.processMessage(bot.id, extracted.chatId, extracted.text);
-    await adapter.sendMessage(extracted.chatId, responseText);
+    const image = extracted.photoFileId ? await adapter.downloadPhoto(extracted.photoFileId) : undefined;
+    // processMessage возвращает массив пузырей: [ответ по базе, реплика сценария] — шлём по очереди.
+    const messages = await messageHandler.processMessage(bot.id, extracted.chatId, extracted.text, image);
+    for (const msg of messages) {
+      await adapter.sendMessage(extracted.chatId, msg);
+    }
   } catch (err) {
     console.error("Ошибка обработки сообщения Telegram:", err);
     await adapter

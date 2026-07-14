@@ -18,7 +18,11 @@ export function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
     setLoading(true);
     setError(null);
     try {
-      setCompanies(await listClients());
+      const list = await listClients();
+      setCompanies(list);
+      // У менеджера всегда ровно одна компания — не показываем список из одного элемента,
+      // сразу открываем её.
+      if (!isAdmin && list[0]) setSelectedCompany(list[0]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка загрузки");
     } finally {
@@ -50,24 +54,27 @@ export function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
       />
 
       {selectedCompany ? (
-        <CompanyDetail company={selectedCompany} onBack={() => setSelectedCompany(null)} />
+        <CompanyDetail company={selectedCompany} onBack={isAdmin ? () => setSelectedCompany(null) : undefined} />
+      ) : !isAdmin ? (
+        // Менеджер: единственная компания открывается автоматически (см. load()),
+        // тут только короткий загрузочный экран или ошибка.
+        <main className="max-w-4xl mx-auto px-6 py-16 text-center">
+          {loading && <p className="text-slate-400">Загрузка…</p>}
+          {error && <p className="text-red-600">{error}</p>}
+        </main>
       ) : (
         <main className="max-w-4xl mx-auto px-6 py-10">
           <div className="flex items-center justify-between mb-8">
             <div>
-              <h1 className="text-2xl font-bold text-slate-900">{isAdmin ? "Компании" : "Ваша компания"}</h1>
-              <p className="text-slate-500 mt-1">
-                {isAdmin ? `Всего: ${companies.length}` : `Компания #${session?.client_id}`}
-              </p>
+              <h1 className="text-2xl font-bold text-slate-900">Компании</h1>
+              <p className="text-slate-500 mt-1">Всего: {companies.length}</p>
             </div>
-            {isAdmin && (
-              <button
-                onClick={() => setShowCreate(true)}
-                className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg px-5 py-2.5 transition-colors"
-              >
-                + Новая компания
-              </button>
-            )}
+            <button
+              onClick={() => setShowCreate(true)}
+              className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg px-5 py-2.5 transition-colors"
+            >
+              + Новая компания
+            </button>
           </div>
 
           {loading && <p className="text-slate-400">Загрузка…</p>}

@@ -8,5 +8,8 @@ export interface Dialog {
   task_attempts: Record<string, number>; // сколько раз спрашивали задачу
   is_active: boolean;
   greeted: boolean;
+  mentioned_products: string[]; // legacy: товары, которые клиент упоминал (заменяется на known)
+  known: Record<string, string>; // slot-filling: уже известные данные клиента (имя, авто, год, товар...)
   created_at: Date;
+  taken_over_by: number | null; // менеджер перехватил диалог — FSM/LLM не отвечает, пока не отпущен
 }

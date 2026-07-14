@@ -7,15 +7,12 @@ interface SliderDef {
   high: string;
 }
 
+// Только самые важные критерии — чтобы UI не был перегружен. Остальные (напор, инициативность,
+// юмор, уверенность, структура) остаются на дефолтных значениях стиля и в промпт идут как есть.
 const SLIDERS: SliderDef[] = [
   { key: "formality", label: "Формальность", low: "Разговорный", high: "Деловой" },
   { key: "warmth", label: "Теплота", low: "Нейтральный", high: "Очень тёплый" },
   { key: "responseLength", label: "Длина ответов", low: "Кратко", high: "Развёрнуто" },
-  { key: "energy", label: "Напор", low: "Мягкий", high: "Настойчивый" },
-  { key: "initiative", label: "Инициативность", low: "Реактивный", high: "Проактивный" },
-  { key: "humor", label: "Юмор", low: "Серьёзный", high: "С юмором" },
-  { key: "confidence", label: "Уверенность", low: "Осторожный", high: "Уверенный" },
-  { key: "structure", label: "Структура", low: "Сплошной текст", high: "Списки/пункты" },
 ];
 
 export function StylePanel({

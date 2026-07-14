@@ -1,7 +1,7 @@
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 
-export type StepRuleType = "example" | "validation" | "custom";
+export type StepRuleType = "example" | "validation" | "style";
 
 export interface StepRule {
   type: StepRuleType;
@@ -14,6 +14,7 @@ export interface StepFields {
   maxAttempts: number;
   fieldName?: string;
   rules: StepRule[];
+  acceptsImage?: boolean;
 }
 
 export interface StepNodeData extends StepFields {
@@ -53,6 +54,11 @@ export function StepNode({ data }: NodeProps) {
           {d.rules.length > 0 && (
             <span className="text-[10px] bg-slate-100 text-slate-500 rounded-full px-2 py-0.5">
               {d.rules.length} правил
+            </span>
+          )}
+          {d.acceptsImage && (
+            <span className="text-[10px] bg-slate-100 text-slate-500 rounded-full px-2 py-0.5" title="Принимает фото">
+              📷
             </span>
           )}
         </div>

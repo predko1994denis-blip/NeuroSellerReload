@@ -11,6 +11,8 @@ export interface Task {
   max_attempts: number;
   required: boolean;
   is_fallback: boolean;
+  accepts_image: boolean;
+  title: string;
   context_strategy_id: number | null;
   created_at: Date;
 }

@@ -68,6 +68,15 @@ export async function updateBotCompanyName(botId: number, companyName: string): 
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Не удалось обновить название компании");
 }
 
+export async function updateBotRagEnabled(botId: number, ragEnabled: boolean): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/bots/${botId}/rag-enabled`, {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify({ rag_enabled: ragEnabled }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Не удалось переключить RAG");
+}
+
 export interface CreateBotResponse {
   id: number;
   webhook_set: boolean;
@@ -135,7 +144,7 @@ export interface GenerateProcessResponse {
   tasks: Task[];
 }
 
-export type StepRuleType = "example" | "validation" | "custom";
+export type StepRuleType = "example" | "validation" | "style";
 
 export interface StepRule {
   type: StepRuleType;
@@ -148,6 +157,7 @@ export interface StepInput {
   maxAttempts: number;
   fieldName?: string;
   rules?: StepRule[];
+  acceptsImage?: boolean;
 }
 
 export async function generateProcess(
@@ -335,7 +345,7 @@ export interface RegisterClientResponse {
 export async function registerClient(email: string, password: string): Promise<RegisterClientResponse> {
   const res = await fetch(`${API_BASE_URL}/api/clients/register`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(),
     body: JSON.stringify({ email, password }),
   });
   if (!res.ok) {
@@ -343,4 +353,116 @@ export async function registerClient(email: string, password: string): Promise<R
     throw new Error(body.error ?? "Не удалось создать компанию");
   }
   return res.json();
+}
+
+// ── Портал менеджера: диалоги и пометки ──
+
+export interface DialogSummary {
+  id: number;
+  chat_id: string;
+  is_active: boolean;
+  created_at: string;
+  message_count: number;
+  last_message_at: string | null;
+  taken_over_by: number | null;
+}
+
+export interface DialogMessage {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+  feedback: string | null;
+  sent_by: number | null;
+}
+
+export async function listDialogs(botId: number): Promise<DialogSummary[]> {
+  const res = await fetch(`${API_BASE_URL}/api/dialogs?bot_id=${botId}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error("Не удалось загрузить диалоги");
+  return res.json();
+}
+
+export async function getDialogMessages(dialogId: number): Promise<DialogMessage[]> {
+  const res = await fetch(`${API_BASE_URL}/api/dialogs/${dialogId}/messages`, { headers: authHeaders() });
+  if (!res.ok) throw new Error("Не удалось загрузить сообщения");
+  return res.json();
+}
+
+export async function setDialogActive(dialogId: number, isActive: boolean): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/dialogs/${dialogId}`, {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify({ is_active: isActive }),
+  });
+  if (!res.ok) throw new Error("Не удалось изменить статус диалога");
+}
+
+export async function takeoverDialog(dialogId: number): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/dialogs/${dialogId}/takeover`, { method: "POST", headers: authHeaders() });
+  if (!res.ok) throw new Error("Не удалось перехватить диалог");
+}
+
+export async function releaseDialog(dialogId: number): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/dialogs/${dialogId}/release`, { method: "POST", headers: authHeaders() });
+  if (!res.ok) throw new Error("Не удалось отпустить диалог");
+}
+
+export async function sendDialogMessage(dialogId: number, text: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/dialogs/${dialogId}/send`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? "Не удалось отправить сообщение");
+  }
+}
+
+export async function saveMessageFeedback(messageId: number, suggestedAnswer: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/messages/${messageId}/feedback`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ suggested_answer: suggestedAnswer }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? "Не удалось сохранить пометку");
+  }
+}
+
+export async function deleteMessageFeedback(messageId: number): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/messages/${messageId}/feedback`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error("Не удалось снять пометку");
+}
+
+// ── Экран настройщика: пометки менеджера по боту ──
+
+export interface FeedbackItem {
+  id: number;
+  message_id: number;
+  dialog_id: number;
+  original_answer: string;
+  user_message: string | null;
+  suggested_answer: string;
+  resolved: boolean;
+  created_at: string;
+}
+
+export async function listFeedback(botId: number): Promise<FeedbackItem[]> {
+  const res = await fetch(`${API_BASE_URL}/api/feedback?bot_id=${botId}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error("Не удалось загрузить пометки");
+  return res.json();
+}
+
+export async function setFeedbackResolved(feedbackId: number, resolved: boolean): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/feedback/${feedbackId}/resolved`, {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify({ resolved }),
+  });
+  if (!res.ok) throw new Error("Не удалось обновить статус");
 }

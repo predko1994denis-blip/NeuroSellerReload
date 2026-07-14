@@ -9,9 +9,13 @@ import type { RagDocumentRepository } from "../repositories/RagDocumentRepositor
 import type { ProcessGenerator, StepInput, ScenarioStyle } from "../managers/ProcessGenerator";
 import { DEFAULT_SCENARIO_STYLE, GenerationCache } from "../managers/ProcessGenerator";
 import type { ScenarioRepository } from "../repositories/ScenarioRepository";
-import { authenticate, scopeClientId, AuthError } from "../auth";
-import { setTelegramWebhook } from "../channels/TelegramAdapter";
+import type { DialogRepository } from "../repositories/DialogRepository";
+import type { MessageRepository } from "../repositories/MessageRepository";
+import type { MessageFeedbackRepository } from "../repositories/MessageFeedbackRepository";
+import { authenticate, scopeClientId, requireAdmin, AuthError } from "../auth";
+import { setTelegramWebhook, TelegramAdapter } from "../channels/TelegramAdapter";
 import { extractTextFromPdf } from "../managers/PdfTextExtractor";
+import type { PdfVisionExtractor } from "../managers/PdfVisionExtractor";
 
 const BOT_MODEL = process.env.BOT_MODEL ?? "openai/gpt-4o-mini";
 
@@ -24,8 +28,12 @@ export interface AdminApiDeps {
   taskRepo: TaskRepository;
   ragIngestionManager: RagIngestionManager;
   ragDocumentRepo: RagDocumentRepository;
+  pdfVisionExtractor: PdfVisionExtractor;
   processGenerator: ProcessGenerator;
   scenarioRepo: ScenarioRepository;
+  dialogRepo: DialogRepository;
+  messageRepo: MessageRepository;
+  messageFeedbackRepo: MessageFeedbackRepository;
 }
 
 interface ScenarioProcessInput {
@@ -59,6 +67,20 @@ async function generateAndSaveProcesses(
         ...processes.flatMap((p) => p.router?.branches.map((b) => b.condition) ?? []),
       ].filter((g, i, arr) => g && arr.indexOf(g) === i);
 
+  // Слоты сценария (slot-filling): что бот собирает по ходу ВСЕХ шагов — список меток данных.
+  // Передаётся в каждый шаг, чтобы модель извлекала любые упомянутые данные в known_updates.
+  // Чистим цель до сущности: срезаем глаголы и выкидываем чисто-действенные шаги (поздороваться/
+  // попрощаться/показать) — они данные не собирают и в списке сущностей не нужны. Товар — сквозной.
+  const cleanSlot = (goal: string): string | null => {
+    const g = goal.trim();
+    if (/^(поздоров|поприветств|попрощ|показать|сообщ|подтверд)/i.test(g) && !/узнать|выяснить|уточнить|собрать/i.test(g)) return null;
+    return g.replace(/^(поздороваться и\s+|поприветствовать и\s+)?(узнать|выяснить|уточнить|собрать|спросить|получить)\s+/i, "").trim() || null;
+  };
+  const slots = [
+    ...processes.flatMap((p) => p.steps.map((s) => cleanSlot(s.goal))),
+    "интересующий товар (что клиент хочет купить)",
+  ].filter((g, i, arr): g is string => !!g && arr.indexOf(g) === i);
+
   // cache: если содержимое шага (цель/правила/попытки) не изменилось с прошлой генерации
   // этого сценария, шаг переиспользует старый текст вместо нового вызова LLM (инкремент).
   const generatedPerProcess = await Promise.all(
@@ -72,9 +94,10 @@ async function generateAndSaveProcesses(
             style,
             scenarioGoals,
             cache,
-            nonGoals
+            nonGoals,
+            slots
           )
-        : deps.processGenerator.generate(companyName, proc.steps, style, scenarioGoals, cache, nonGoals);
+        : deps.processGenerator.generate(companyName, proc.steps, style, scenarioGoals, cache, nonGoals, slots);
     })
   );
 
@@ -95,6 +118,8 @@ async function generateAndSaveProcesses(
           max_attempts: proc.steps[i]?.maxAttempts ?? 3,
           required: proc.steps[i]?.required ?? true,
           is_fallback: t.is_fallback ?? false,
+          accepts_image: proc.steps[i]?.acceptsImage ?? false,
+          title: t.title,
           context_strategy_id: null,
         });
       }
@@ -111,6 +136,14 @@ async function assertBotAccess(deps: AdminApiDeps, botId: number, auth: { role: 
     throw new Error("Бот не найден");
   }
   return bot;
+}
+
+// Проверяет доступ к диалогу: диалог существует и его бот принадлежит пользователю (admin — любому)
+async function assertDialogAccess(deps: AdminApiDeps, dialogId: number, auth: { role: string; clientId: number | null }) {
+  const dialog = await deps.dialogRepo.findById(dialogId);
+  if (!dialog) throw new Error("Диалог не найден");
+  await assertBotAccess(deps, dialog.bot_id, auth); // бросит, если бот не принадлежит клиенту
+  return dialog;
 }
 
 function json(data: unknown, status = 200): Response {
@@ -141,6 +174,10 @@ export async function handleAdminApi(request: Request, deps: AdminApiDeps): Prom
     if (pathname.startsWith("/api/bots/") && pathname.endsWith("/company-name") && request.method === "PATCH") {
       const id = Number(pathname.split("/")[3]);
       return await updateBotCompanyName(id, request, deps);
+    }
+    if (pathname.startsWith("/api/bots/") && pathname.endsWith("/rag-enabled") && request.method === "PATCH") {
+      const id = Number(pathname.split("/")[3]);
+      return await updateBotRagEnabled(id, request, deps);
     }
     if (pathname === "/api/processes/create" && request.method === "POST") {
       return await createProcess(request, deps);
@@ -193,6 +230,44 @@ export async function handleAdminApi(request: Request, deps: AdminApiDeps): Prom
       const id = Number(pathname.split("/").pop());
       return await deleteRagDocument(id, request, deps);
     }
+    if (pathname === "/api/dialogs" && request.method === "GET") {
+      return await listDialogs(request, deps);
+    }
+    if (pathname.match(/^\/api\/dialogs\/\d+\/messages$/) && request.method === "GET") {
+      const id = Number(pathname.split("/")[3]);
+      return await getDialogMessages(id, request, deps);
+    }
+    if (pathname.match(/^\/api\/dialogs\/\d+$/) && request.method === "PATCH") {
+      const id = Number(pathname.split("/").pop());
+      return await updateDialog(id, request, deps);
+    }
+    if (pathname.match(/^\/api\/dialogs\/\d+\/takeover$/) && request.method === "POST") {
+      const id = Number(pathname.split("/")[3]);
+      return await takeoverDialog(id, request, deps);
+    }
+    if (pathname.match(/^\/api\/dialogs\/\d+\/release$/) && request.method === "POST") {
+      const id = Number(pathname.split("/")[3]);
+      return await releaseDialog(id, request, deps);
+    }
+    if (pathname.match(/^\/api\/dialogs\/\d+\/send$/) && request.method === "POST") {
+      const id = Number(pathname.split("/")[3]);
+      return await sendDialogMessage(id, request, deps);
+    }
+    if (pathname.match(/^\/api\/messages\/\d+\/feedback$/) && request.method === "POST") {
+      const id = Number(pathname.split("/")[3]);
+      return await saveMessageFeedback(id, request, deps);
+    }
+    if (pathname.match(/^\/api\/messages\/\d+\/feedback$/) && request.method === "DELETE") {
+      const id = Number(pathname.split("/")[3]);
+      return await deleteMessageFeedback(id, request, deps);
+    }
+    if (pathname === "/api/feedback" && request.method === "GET") {
+      return await listFeedback(request, deps);
+    }
+    if (pathname.match(/^\/api\/feedback\/\d+\/resolved$/) && request.method === "PATCH") {
+      const id = Number(pathname.split("/")[3]);
+      return await setFeedbackResolved(id, request, deps);
+    }
   } catch (err) {
     if (err instanceof AuthError) return json({ error: err.message }, 401);
     if (err instanceof Error) return json({ error: err.message }, 400);
@@ -209,6 +284,10 @@ async function issueToken(deps: AdminApiDeps, userId: number): Promise<string> {
 }
 
 async function registerClient(request: Request, deps: AdminApiDeps): Promise<Response> {
+  // Создавать компании и их логины может только настройщик (admin) — публичной регистрации нет.
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  requireAdmin(auth);
+
   const body = (await request.json()) as { email?: string; password?: string };
   if (!body.email || !body.password) throw new Error("email и password обязательны");
 
@@ -256,6 +335,7 @@ async function login(request: Request, deps: AdminApiDeps): Promise<Response> {
 
 async function createBot(request: Request, deps: AdminApiDeps): Promise<Response> {
   const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  requireAdmin(auth); // ботов заводит только настройщик
   const body = (await request.json()) as { telegram_token?: string; client_id?: number; company_name?: string };
   if (!body.telegram_token) throw new Error("telegram_token обязателен");
 
@@ -314,8 +394,20 @@ async function updateBotCompanyName(id: number, request: Request, deps: AdminApi
   return json({ id: bot.id, company_name: bot.company_name });
 }
 
+async function updateBotRagEnabled(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  const body = (await request.json()) as { rag_enabled?: boolean };
+  if (typeof body.rag_enabled !== "boolean") throw new Error("rag_enabled (boolean) обязателен");
+
+  await assertBotAccess(deps, id, auth);
+
+  const bot = await deps.botRepo.updateRagEnabled(id, body.rag_enabled);
+  return json({ id: bot.id, rag_enabled: bot.rag_enabled });
+}
+
 async function createProcess(request: Request, deps: AdminApiDeps): Promise<Response> {
   const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  requireAdmin(auth);
   const body = (await request.json()) as { bot_id?: number; process_number?: number; name?: string };
   if (!body.bot_id || !body.process_number || !body.name) {
     throw new Error("bot_id, process_number и name обязательны");
@@ -331,6 +423,7 @@ async function createProcess(request: Request, deps: AdminApiDeps): Promise<Resp
 // Генерация цепочки задач: один LLM-вызов на КАЖДЫЙ шаг (параллельно) + сохранение в БД
 async function generateProcess(request: Request, deps: AdminApiDeps): Promise<Response> {
   const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  requireAdmin(auth);
   const body = (await request.json()) as {
     bot_id?: number;
     name?: string;
@@ -369,6 +462,8 @@ async function generateProcess(request: Request, deps: AdminApiDeps): Promise<Re
       max_attempts: body.steps[i]!.maxAttempts,
       required: body.steps[i]!.required,
       is_fallback: t.is_fallback ?? false,
+      accepts_image: body.steps[i]!.acceptsImage ?? false,
+      title: t.title,
       context_strategy_id: null,
     });
     createdTasks.push({ ...task, title: t.title });
@@ -383,6 +478,7 @@ async function generateProcess(request: Request, deps: AdminApiDeps): Promise<Re
 // сохраняются, чтобы сценарий можно было открыть снова и отредактировать визуально.
 async function generateScenario(request: Request, deps: AdminApiDeps): Promise<Response> {
   const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  requireAdmin(auth);
   const body = (await request.json()) as {
     bot_id?: number;
     name?: string;
@@ -456,6 +552,7 @@ async function getScenario(id: number, request: Request, deps: AdminApiDeps): Pr
 // Пересобирает сценарий: удаляет старые процессы/задачи, генерирует заново по новому графу.
 async function regenerateScenario(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
   const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  requireAdmin(auth);
   const scenario = await deps.scenarioRepo.findById(id);
   if (!scenario) throw new Error("Сценарий не найден");
   await assertBotAccess(deps, scenario.bot_id, auth);
@@ -523,6 +620,7 @@ async function regenerateScenario(id: number, request: Request, deps: AdminApiDe
 
 async function deleteScenario(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
   const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  requireAdmin(auth);
   const scenario = await deps.scenarioRepo.findById(id);
   if (!scenario) throw new Error("Сценарий не найден");
   await assertBotAccess(deps, scenario.bot_id, auth);
@@ -536,6 +634,7 @@ async function deleteScenario(id: number, request: Request, deps: AdminApiDeps):
 
 async function updateTaskDescription(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
   const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  requireAdmin(auth);
   const body = (await request.json()) as { task_description?: string };
   if (!body.task_description?.trim()) throw new Error("task_description обязателен");
 
@@ -562,6 +661,7 @@ async function listProcesses(request: Request, deps: AdminApiDeps): Promise<Resp
 
 async function deleteProcess(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
   const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  requireAdmin(auth);
   if (!id) throw new Error("Некорректный id процесса");
 
   const process = await deps.processRepo.findById(id);
@@ -588,6 +688,7 @@ async function listTasks(request: Request, deps: AdminApiDeps): Promise<Response
 
 async function createTask(request: Request, deps: AdminApiDeps): Promise<Response> {
   const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  requireAdmin(auth);
   const body = (await request.json()) as {
     process_id?: number;
     task_number?: string;
@@ -617,6 +718,8 @@ async function createTask(request: Request, deps: AdminApiDeps): Promise<Respons
     max_attempts: body.max_attempts ?? 3,
     required: true,
     is_fallback: false,
+    accepts_image: false,
+    title: "",
     context_strategy_id: body.context_strategy_id ?? null,
   });
   return json(task);
@@ -638,7 +741,19 @@ async function uploadRagDocument(request: Request, deps: AdminApiDeps): Promise<
   await assertBotAccess(deps, botId, auth);
 
   const buffer = Buffer.from(await file.arrayBuffer());
-  const text = await extractTextFromPdf(buffer);
+
+  // Основной путь — «прочитать глазами» (vision), корректно берёт таблицы/прайсы.
+  // Фолбэк — старый линейный парсер: если рендер/vision по любой причине упадёт
+  // (нет системных либ, лимит ключа и т.п.), загрузка всё равно не сломается.
+  let text = "";
+  try {
+    text = await deps.pdfVisionExtractor.extract(buffer);
+  } catch (err) {
+    console.error("PDF vision-извлечение не удалось, откат к pdf-parse:", err);
+  }
+  if (!text.trim()) {
+    text = await extractTextFromPdf(buffer);
+  }
 
   await deps.ragIngestionManager.ingest(botId, file.name, text);
   return json({ ok: true });
@@ -665,4 +780,145 @@ async function deleteRagDocument(id: number, request: Request, deps: AdminApiDep
 
   await deps.ragDocumentRepo.delete(id);
   return json({ ok: true });
+}
+
+// ── Портал менеджера: диалоги и пометки сообщений ──
+
+// GET /api/dialogs?bot_id= — список диалогов бота (скоуп по компании).
+async function listDialogs(request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  const url = new URL(request.url);
+  const botId = Number(url.searchParams.get("bot_id"));
+  if (!botId) throw new Error("bot_id обязателен");
+
+  await assertBotAccess(deps, botId, auth);
+  const dialogs = await deps.dialogRepo.findByBotId(botId);
+  return json(dialogs);
+}
+
+// GET /api/dialogs/:id/messages — сообщения диалога + пометки менеджера.
+async function getDialogMessages(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  await assertDialogAccess(deps, id, auth);
+
+  const messages = await deps.messageRepo.findByDialogId(id);
+  const feedback = await deps.messageFeedbackRepo.findByDialogId(id);
+  const feedbackByMessage: Record<number, string> = {};
+  for (const f of feedback) feedbackByMessage[f.message_id] = f.suggested_answer;
+
+  return json(
+    messages.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content ?? "",
+      created_at: m.created_at,
+      feedback: feedbackByMessage[m.id] ?? null,
+      sent_by: m.sent_by,
+    }))
+  );
+}
+
+// PATCH /api/dialogs/:id — переключить «завершён/активен» вручную (доступно и менеджеру).
+async function updateDialog(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  await assertDialogAccess(deps, id, auth);
+
+  const body = (await request.json()) as { is_active?: boolean };
+  if (typeof body.is_active !== "boolean") throw new Error("is_active обязателен");
+
+  const dialog = await deps.dialogRepo.update(id, { is_active: body.is_active });
+  // Завершённый диалог не должен оставаться «висеть» перехваченным — иначе следующий клиент
+  // того же чата попадёт в новый диалог, а старый останется заблокирован для бота навсегда.
+  if (!body.is_active && dialog.taken_over_by !== null) {
+    await deps.dialogRepo.setTakenOverBy(id, null);
+  }
+  return json({ ok: true, is_active: dialog.is_active });
+}
+
+// POST /api/dialogs/:id/takeover — менеджер перехватывает диалог: бот перестаёт отвечать автоматически.
+async function takeoverDialog(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  await assertDialogAccess(deps, id, auth);
+
+  const dialog = await deps.dialogRepo.setTakenOverBy(id, auth.userId);
+  return json({ ok: true, taken_over_by: dialog.taken_over_by });
+}
+
+// POST /api/dialogs/:id/release — отдать управление обратно боту.
+async function releaseDialog(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  await assertDialogAccess(deps, id, auth);
+
+  const dialog = await deps.dialogRepo.setTakenOverBy(id, null);
+  return json({ ok: true, taken_over_by: dialog.taken_over_by });
+}
+
+// POST /api/dialogs/:id/send — менеджер пишет клиенту напрямую (только пока диалог перехвачен).
+async function sendDialogMessage(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  const dialog = await assertDialogAccess(deps, id, auth);
+  if (dialog.taken_over_by === null) {
+    throw new Error("Сначала перехватите диалог, прежде чем писать клиенту");
+  }
+
+  const body = (await request.json()) as { text?: string };
+  const text = (body.text ?? "").trim();
+  if (!text) throw new Error("text обязателен");
+
+  const bot = await deps.botRepo.findById(dialog.bot_id);
+  if (!bot) throw new Error("Бот не найден");
+
+  await new TelegramAdapter(bot.telegram_token).sendMessage(dialog.chat_id, text);
+  const message = await deps.messageRepo.create(id, "assistant", text, auth.userId);
+  return json({ ok: true, message_id: message.id });
+}
+
+// POST /api/messages/:id/feedback — сохранить «как надо было ответить» для сообщения бота.
+async function saveMessageFeedback(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  const message = await deps.messageRepo.findById(id);
+  if (!message) throw new Error("Сообщение не найдено");
+  await assertDialogAccess(deps, message.dialog_id, auth);
+
+  const body = (await request.json()) as { suggested_answer?: string };
+  const suggested = (body.suggested_answer ?? "").trim();
+  if (!suggested) throw new Error("suggested_answer обязателен");
+
+  const fb = await deps.messageFeedbackRepo.upsert(id, suggested, auth.userId);
+  return json({ ok: true, feedback: fb.suggested_answer });
+}
+
+// DELETE /api/messages/:id/feedback — снять пометку.
+async function deleteMessageFeedback(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  const message = await deps.messageRepo.findById(id);
+  if (!message) throw new Error("Сообщение не найдено");
+  await assertDialogAccess(deps, message.dialog_id, auth);
+
+  await deps.messageFeedbackRepo.delete(id);
+  return json({ ok: true });
+}
+
+// GET /api/feedback?bot_id= — все пометки менеджера по боту, с контекстом. Только настройщик.
+async function listFeedback(request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  requireAdmin(auth);
+
+  const url = new URL(request.url);
+  const botId = Number(url.searchParams.get("bot_id"));
+  if (!botId) throw new Error("bot_id обязателен");
+
+  await assertBotAccess(deps, botId, auth);
+  const feedback = await deps.messageFeedbackRepo.findAllByBotId(botId);
+  return json(feedback);
+}
+
+// PATCH /api/feedback/:id/resolved — отметить пометку разобранной / вернуть в работу.
+async function setFeedbackResolved(id: number, request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  requireAdmin(auth);
+
+  const body = (await request.json()) as { resolved?: boolean };
+  const fb = await deps.messageFeedbackRepo.setResolved(id, !!body.resolved);
+  return json({ ok: true, resolved: fb.resolved });
 }

@@ -6,4 +6,5 @@ export interface Message {
   role: MessageRole;
   content: string | null; // текст; может быть null, если сообщение состоит только из вложения
   created_at: Date;
+  sent_by: number | null; // заполнено, если сообщение отправил менеджер вручную (перехват), не бот
 }

@@ -6,11 +6,11 @@ export class TaskRepository {
     const [row] = await sql<Task[]>`
       INSERT INTO tasks (
         process_id, task_number, task_description, task_type,
-        model, temperature, max_attempts, required, is_fallback, context_strategy_id
+        model, temperature, max_attempts, required, is_fallback, accepts_image, title, context_strategy_id
       )
       VALUES (
         ${task.process_id}, ${task.task_number}, ${task.task_description}, ${task.task_type},
-        ${task.model}, ${task.temperature}, ${task.max_attempts}, ${task.required}, ${task.is_fallback}, ${task.context_strategy_id}
+        ${task.model}, ${task.temperature}, ${task.max_attempts}, ${task.required}, ${task.is_fallback}, ${task.accepts_image}, ${task.title}, ${task.context_strategy_id}
       )
       RETURNING *
     `;

@@ -5,12 +5,14 @@ import type { MessageRepository } from "./repositories/MessageRepository";
 import type { BotRepository } from "./repositories/BotRepository";
 import type { Dialog } from "./entities/Dialog";
 import type { Task } from "./entities/Task";
-import type { ILLMRequester, IResponseParser, ParsedResponse } from "./entities/LLMContract";
+import type { ILLMRequester, IResponseParser, ParsedResponse, LLMHistoryItem, LLMRequestPayload } from "./entities/LLMContract";
 import type { ReminderManager } from "./managers/ReminderManager";
 import type { CRMManager } from "./managers/CRMManager";
 import type { RagSearchManager } from "./managers/RagSearchManager";
+import type { ImageStepReader } from "./managers/ImageStepReader";
 
 const MAX_FOLLOWUP_ITERATIONS = 10;
+const IMAGE_NOT_ACCEPTED_REPLY = "Пожалуйста, опишите это текстом — на этом шаге я пока не умею читать фото.";
 
 export class MessageHandler {
   // лок по "botId:chatId" — не даём двум сообщениям одного юзера обрабатываться параллельно
@@ -26,28 +28,48 @@ export class MessageHandler {
     private responseParser: IResponseParser,
     private reminderManager: ReminderManager,
     private crmManager: CRMManager,
-    private ragSearchManager: RagSearchManager
+    private ragSearchManager: RagSearchManager,
+    private imageStepReader: ImageStepReader
   ) {}
 
-  async processMessage(botId: number, chatId: string, text: string): Promise<string> {
+  // image — если клиент прислал фото (text в этом случае — подпись к нему, может быть пустой строкой).
+  // Возвращает МАССИВ сообщений-пузырей: обычно [ответ по базе, реплика сценария] или [реплика].
+  async processMessage(
+    botId: number,
+    chatId: string,
+    text: string,
+    image?: { buffer: Buffer; mimeType: string }
+  ): Promise<string[]> {
     const lockKey = `${botId}:${chatId}`;
     const previous = this.locks.get(lockKey) ?? Promise.resolve();
-    const run = previous.then(() => this.processMessageLocked(botId, chatId, text));
+    const run = previous.then(() => this.processMessageLocked(botId, chatId, text, image));
     this.locks.set(lockKey, run.catch(() => {}));
     return run;
   }
 
-  private async processMessageLocked(botId: number, chatId: string, text: string): Promise<string> {
-    if (text.trim() === "/clear") {
+  private async processMessageLocked(
+    botId: number,
+    chatId: string,
+    text: string,
+    image?: { buffer: Buffer; mimeType: string }
+  ): Promise<string[]> {
+    if (!image && text.trim() === "/clear") {
       const active = await this.dialogRepo.findActiveByChatAndBot(chatId, botId);
       if (active) {
         await this.dialogRepo.delete(active.id); // каскадно удаляет messages/reminders/crm_leads
       }
-      return "Диалог удалён. Напишите что-нибудь, чтобы начать заново.";
+      return ["Диалог удалён. Напишите что-нибудь, чтобы начать заново."];
     }
 
     let dialog = await this.getOrCreateDialog(botId, chatId);
     await this.reminderManager.cancel(dialog.id); // юзер ответил — старый таймер follow-up больше не нужен
+
+    // Диалог перехвачен менеджером из UI: бот молчит совсем, только сохраняем сообщение клиента,
+    // чтобы менеджер увидел его в переписке. FSM/LLM не трогаем, пока менеджер не отпустит диалог.
+    if (dialog.taken_over_by !== null) {
+      await this.messageRepo.create(dialog.id, "user", text);
+      return [];
+    }
 
     // greeted управляется системой, а не ответом LLM (промпты не обязаны возвращать это поле):
     // ровно один раз, для самого первого запроса нового диалога, отправляем greeted=false,
@@ -58,23 +80,87 @@ export class MessageHandler {
     }
 
     let task = await this.loadTask(dialog);
-    const history = await this.messageRepo.findByDialogId(dialog.id);
-    const systemPrompt = await this.buildSystemPrompt(botId, task, text);
 
-    const rawResponse = await this.llmRequester.request(
-      systemPrompt,
+    // Клиент прислал фото. Если текущий шаг его не ждёт — вежливо просим текст и НЕ трогаем
+    // FSM/попытки (как будто сообщения не было). Если ждёт — "читаем" фото в обычный текст
+    // (goal шага + подпись клиента) и дальше ведём диалог ровно так же, как при вводе текстом.
+    if (image) {
+      if (!task.accepts_image) {
+        return [IMAGE_NOT_ACCEPTED_REPLY];
+      }
+      try {
+        text = await this.imageStepReader.read(image.buffer, image.mimeType, task.title, text);
+      } catch (err) {
+        console.error("ImageStepReader.read failed:", err);
+        return ["Не получилось разобрать фото — попробуйте переслать ещё раз или опишите текстом."];
+      }
+    }
+
+    const history = await this.messageRepo.findByDialogId(dialog.id);
+    const historyItems = history.map((m) => ({ role: m.role, content: m.content ?? "" }));
+
+    // ── ОТДЕЛ 1: «Справочная» ── отдельным фокусным вызовом отвечает на вопрос по базе (или "").
+    const ragAnswer = await this.answerFromRag(botId, text, task.model, historyItems);
+
+    // Прошлый ход мог быть [ВНЕ ЗАДАЧ]-отказом с вопросом «помочь с другим или прервать?» —
+    // такой обмен не попадает в history, поэтому короткое "да"/"нет" клиента передаём через
+    // known на этот ОДИН ход, затем сразу гасим, чтобы не путать будущие ходы.
+    const known = dialog.known ?? {};
+    if (known.__stop_offer === "true") {
+      const { __stop_offer: _drop, ...rest } = known;
+      await this.dialogRepo.setKnown(dialog.id, rest);
+      dialog.known = rest;
+    }
+
+    // ── ОТДЕЛ 2: «Менеджер» ── ведёт свою задачу сценария (без RAG-логики, только known).
+    let parsed = await this.requestParsed(
+      this.buildSystemPrompt(task),
       {
         latest_user_message: text,
         greeted: greetedForThisRequest,
-        history: history.map((m) => ({ role: m.role, content: m.content ?? "" })),
+        known,
+        history: historyItems,
       },
       task.model,
       task.temperature
     );
-    let parsed = this.responseParser.parse(rawResponse);
     await this.crmManager.saveLeadData(dialog.id, parsed);
+    await this.absorbKnown(dialog, parsed); // копим известные данные клиента (slot-filling)
 
-    await this.messageRepo.create(dialog.id, "user", text);
+    if (this.shouldHoldForConfirmation(task, parsed, dialog, historyItems)) {
+      (parsed as { next_process?: number | null }).next_process = null;
+      parsed.current_task_completed = false;
+    }
+
+    // Сохранение текущего обмена (сообщение клиента + ответ справки) в историю. Вынесено в хелпер,
+    // потому что для out-of-scope мы его НЕ вызываем — такой обмен в историю не попадает.
+    const saveTurn = async () => {
+      await this.messageRepo.create(dialog.id, "user", text);
+      if (ragAnswer) await this.messageRepo.create(dialog.id, "assistant", ragAnswer); // пузырь 1 → в историю
+    };
+
+    // «Стоп» из блока [ВНЕ ЗАДАЧ / СТОП]: клиент попросил остановиться → завершаем диалог этой
+    // репликой, без переходов. Частичный лид в CRM не шлём — клиент сам прервал.
+    if ((parsed as { abort?: unknown }).abort === true) {
+      let stopText = parsed.response_text;
+      if (greetedForThisRequest) stopText = this.stripLeadingGreeting(stopText);
+      await saveTurn();
+      if (stopText) await this.messageRepo.create(dialog.id, "assistant", stopText);
+      await this.dialogRepo.update(dialog.id, { is_active: false });
+      return [ragAnswer, stopText].filter((m): m is string => !!m && m.trim().length > 0);
+    }
+
+    // «Вне задач»: клиент попросил non-goal (напр. статус заказа). Отвечаем отказом + вопросом шага,
+    // но этот обмен в историю НЕ сохраняем — иначе на следующих ходах модель зацикливается на отказе
+    // (проверено: триггер — сам non-goal вопрос в истории). Шаг остаётся, попытку не считаем.
+    if ((parsed as { out_of_scope?: unknown }).out_of_scope === true) {
+      let msg = parsed.response_text;
+      if (greetedForThisRequest) msg = this.stripLeadingGreeting(msg);
+      await this.dialogRepo.setKnown(dialog.id, { ...known, __stop_offer: "true" });
+      return [ragAnswer, msg].filter((m): m is string => !!m && m.trim().length > 0);
+    }
+
+    await saveTurn();
 
     // Пустая history значит, что это самое первое сообщение диалога — бот задаёт вопрос
     // задачи 1.0 впервые. Это не проваленная попытка юзера, поэтому не считаем её.
@@ -91,23 +177,42 @@ export class MessageHandler {
       task = await this.loadTask(dialog);
       const followHistory = await this.messageRepo.findByDialogId(dialog.id);
 
-      const followRaw = await this.llmRequester.request(
-        task.task_description,
+      const followSystemPrompt = this.buildSystemPrompt(task);
+
+      // Ответ предыдущего шага ещё НЕ записан в БД (сохраняется один раз после цикла). Без него
+      // follow-up шаг не видит, что имя уже обработано, и «начинает заново» — здоровается и
+      // спрашивает обобщённо вместо подтверждения товара. Подмешиваем его в историю запроса.
+      const followHistoryForReq = followHistory.map((m) => ({ role: m.role, content: m.content ?? "" }));
+      if (responseText) followHistoryForReq.push({ role: "assistant" as const, content: responseText });
+
+      parsed = await this.requestParsed(
+        followSystemPrompt,
         {
           latest_user_message: "",
           greeted: dialog.greeted,
-          history: followHistory.map((m) => ({ role: m.role, content: m.content ?? "" })),
+          known: dialog.known ?? {},
+          history: followHistoryForReq,
         },
         task.model,
         task.temperature
       );
-      parsed = this.responseParser.parse(followRaw);
       responseText = parsed.response_text;
       await this.crmManager.saveLeadData(dialog.id, parsed);
+      await this.absorbKnown(dialog, parsed);
+
+      // Роутер подтвердил товар, но лезет в ветку → держим на этом шаге, показываем подтверждение.
+      if (this.shouldHoldForConfirmation(task, parsed, dialog, followHistoryForReq)) {
+        (parsed as { next_process?: number | null }).next_process = null;
+        parsed.current_task_completed = false;
+      }
 
       switched = await this.applyTransition(dialog, task, parsed, true);
       dialog = switched.dialog;
     }
+
+    // Диалог уже был поприветствован до этого запроса → срезаем повторное «Здравствуйте! Я помощник…»,
+    // если gemini его всё же вставила (промпт-правило greeted=true не всегда держится на flash-модели).
+    if (greetedForThisRequest) responseText = this.stripLeadingGreeting(responseText);
 
     await this.messageRepo.create(dialog.id, "assistant", responseText);
 
@@ -117,7 +222,8 @@ export class MessageHandler {
       await this.reminderManager.scheduleFirst(dialog.id, botId);
     }
 
-    return responseText;
+    // Пузыри по порядку: [ответ по базе] + [реплика сценария]. Пустые отбрасываем.
+    return [ragAnswer, responseText].filter((m): m is string => !!m && m.trim().length > 0);
   }
 
   private async getOrCreateDialog(botId: number, chatId: string): Promise<Dialog> {
@@ -137,12 +243,151 @@ export class MessageHandler {
     return this.dialogRepo.create(botId, chatId, firstProcess.process_number, firstTask.task_number);
   }
 
-  private async buildSystemPrompt(botId: number, task: Task, userMessage: string): Promise<string> {
-    const bot = await this.botRepo.findById(botId);
-    if (!bot?.rag_enabled) return task.task_description;
+  // Промпт шага сценария — ТОЛЬКО его задача (RAG сюда больше не подклеивается: на вопросы по
+  // базе отвечает отдельная «Справочная» первым сообщением). known уходит структурой в payload.
+  private buildSystemPrompt(task: Task): string {
+    return task.task_description;
+  }
 
-    const ragContext = await this.ragSearchManager.buildContext(botId, userMessage);
-    return ragContext ? `${task.task_description}\n\n${ragContext}` : task.task_description;
+  // Срезает ведущее приветствие/самопредставление из ответа (для случая, когда клиент уже был
+  // поприветствован, а модель зачем-то поздоровалась снова). Если приветствия нет — возвращает как есть.
+  private stripLeadingGreeting(text: string): string {
+    if (!text) return text;
+    let t = text.replace(/^[\s"'«]+/, "");
+    const greetRe = /^(здравствуйте|здравствуй|приветствую|привет|добрый день|добрый вечер|доброе утро|доброго времени(?: суток)?)[\s!,.…—-]*/i;
+    const m = t.match(greetRe);
+    if (!m) return text; // приветствия нет — ничего не трогаем
+    t = t.slice(m[0].length);
+    // За приветствием часто идёт «Я <…> помощник <…>.» — убираем это одно предложение. Точку внутри
+    // (домен «Papl.by») за конец не считаем: концом служит [.!?] перед пробелом и заглавной буквой.
+    t = t.replace(/^я\s+[^!?]*?помощник[^!?]*?[.!?]+(?=\s+[А-ЯЁA-Z])/i, "");
+    t = t.replace(/^[\s—-]+/, "");
+    if (!t) return text; // весь текст был приветствием — лучше оставить исходное, чем пусто
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  }
+
+  // Запрос к «Менеджеру» + разбор с одним авто-ретраем: gemini изредка отдаёт оборванный/битый JSON.
+  // Парсер сперва пробует спасти ответ; если и это не вышло — повторяем запрос один раз (свежая
+  // генерация почти всегда валидна). Так единичный сбой модели не роняет диалог в «тех.неполадки».
+  private async requestParsed(
+    systemPrompt: string,
+    payload: LLMRequestPayload,
+    model: string,
+    temperature: number
+  ): Promise<ParsedResponse> {
+    let lastErr: unknown;
+    // 4 попытки с нарастающей паузой: эндпоинт Gemini у OpenRouter периодически отдаёт
+    // finish_reason=error (rate-limit/сбой ~50% случаев). request внутри try, чтобы ретраить и это.
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        const raw = await this.llmRequester.request(systemPrompt, payload, model, temperature);
+        return this.responseParser.parse(raw);
+      } catch (err) {
+        lastErr = err;
+        console.error(`LLM/parse failed (attempt ${attempt}/4):`, err instanceof Error ? err.message : err);
+        if (attempt < 4) await new Promise((r) => setTimeout(r, 400 * attempt));
+      }
+    }
+    throw lastErr;
+  }
+
+  // «Справочная»: единственная задача — ответить на вопрос клиента по базе знаний. Отдельный
+  // фокусный вызов (без логики сценария) → на слабой модели куда надёжнее, чем всё в одном шаге.
+  // Возвращает готовый текст ответа ИЛИ "" (если вопроса по базе нет / базы нет / ответа нет-нет).
+  private async answerFromRag(
+    botId: number,
+    text: string,
+    model: string,
+    history: LLMHistoryItem[]
+  ): Promise<string> {
+    const bot = await this.botRepo.findById(botId);
+    if (!bot?.rag_enabled) return "";
+
+    // Non-goals (с чем бот не помогает) справка ПРОПУСКАЕТ — их ведёт шаг через [ВНЕ ЗАДАЧ],
+    // иначе на «статус заказа» вылезает двойной пузырь (справка + шаг про одно и то же).
+    const nonGoals = await this.botRepo.getNonGoals(botId);
+    const nonGoalsRule = nonGoals.length
+      ? `\nВАЖНО (высший приоритет): если вопрос клиента про то, с чем бот НЕ помогает (${nonGoals.join("; ")}) — НЕ отвечай, верни ровно слово: НЕТ. Это обработает отдельный шаг, не ты.`
+      : "";
+
+    let ragContext: string | null = null;
+    try {
+      ragContext = await this.ragSearchManager.buildContext(botId, text);
+    } catch (err) {
+      console.error("RAG buildContext failed (answerFromRag):", err);
+      return "";
+    }
+    if (!ragContext) return ""; // нет релевантной базы — вопроса по базе нет
+
+    const sys = `Ты — «Справочная» бота компании Papl.by. ТВОЯ ЕДИНСТВЕННАЯ ЗАДАЧА — ответить на вопрос клиента по базе знаний ниже. НЕ веди диалог, не задавай вопросов, не собирай данные, не здоровайся.
+Отвечай ЖИВО и по-человечески, как вежливый менеджер на «вы», тепло. 1–2 короткие фразы.
+НИКОГДА не задавай уточняющих вопросов (например «для какой марки/модели?», «какой год?») — уточнять данные будет менеджер на следующем шаге, не ты. Твоё дело — только факт из базы.${nonGoalsRule}
+Правила:
+- В базе есть ИМЕННО запрошенное (наличие/цена/срок) → подтверди это ЕСТЕСТВЕННОЙ фразой. НЕ копируй сырую строку каталога с внутренними кодами/артикулами (например «VW-PB6-FR-RH-2011») — перескажи понятными словами: что за товар, цена, срок. Пример тона: «Да, есть — фара передняя правая на Volkswagen Passat B6 (2005–2011), 340 руб., под заказ 5–7 дней.»
+- Клиент назвал товар БЕЗ уточнений (без модели авто), а в базе он есть под разные авто/варианты → дай ОБЩИЙ ответ, НЕ спрашивая модель: «Да, масляные фильтры есть в наличии, от 12.90 руб.». Модель уточнит менеджер дальше.
+- Клиент спрашивает про АССОРТИМЕНТ/ОХВАТ («на какие авто есть запчасти?», «что у вас есть?», «какие товары в наличии?») → это ВОПРОС: перечисли из базы марки/модели или категории, которые есть. НЕ возвращай НЕТ.
+- Клиент О ЧЁМ-ТО СПРАШИВАЕТ (товар, цена, срок, доставка, оплата, гарантия, услуги, ремонт, установка, условия работы — что угодно), но точного ответа в базе НЕТ → НЕ молчи: вежливо и по-человечески скажи, что точно не знаешь / этого нет, и предложи уточнить у менеджера (напр. «Точнее по этому подскажет менеджер при оформлении» или «Нет, установкой и ремонтом мы не занимаемся — только продаём запчасти»). Вежливый ответ ЛУЧШЕ, чем оставить без ответа. НЕ подсовывай смежное, не выдумывай числа.
+- НЕТ возвращай ТОЛЬКО когда клиент вообще НИ О ЧЁМ не спросил: просто поздоровался, назвал имя, сказал «да», или лишь обозначил, какой товар хочет («меня интересует X», «хочу X», «нужен X», «давайте оформим X»). Тогда ответь ровно одним словом: НЕТ. Если же клиент задал ЛЮБОЙ вопрос (даже про услуги/ремонт/гарантию, даже если ответа в базе нет) — это вопрос, отвечай по правилам выше, а не НЕТ.
+Ответь ПРОСТЫМ ТЕКСТОМ — только сам ответ клиенту (или слово НЕТ). Без JSON, без кавычек, без пояснений.
+
+База знаний:
+${ragContext}`;
+
+    try {
+      const raw = await this.llmRequester.requestText(sys, text, model, 0.5);
+      const answer = raw.trim();
+      // Сентинел «НЕТ» = вопроса по базе не было → пузырь Справочной не показываем.
+      if (!answer || answer === "НЕТ" || answer.toUpperCase() === "НЕТ") return "";
+      return answer;
+    } catch (err) {
+      console.error("answerFromRag failed:", err);
+      return "";
+    }
+  }
+
+  // Нормализует known из БД/ответа: jsonb-объект приходит объектом, строку (старые данные) распарсим.
+  // Оставляем только строковые значения (слоты — простые «ключ: значение»).
+  private toKnown(v: unknown): Record<string, string> {
+    let obj: unknown = v;
+    if (typeof obj === "string") {
+      try { obj = JSON.parse(obj); } catch { return {}; }
+    }
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, val] of Object.entries(obj as Record<string, unknown>)) {
+      if (typeof val === "string" && val.trim()) out[k] = val.trim();
+    }
+    return out;
+  }
+
+  // Вливает known_updates из ответа LLM в накопленный known диалога и сохраняет, если что-то новое.
+  // Держит dialog.known в синхроне — его читают следующие шаги (payload.known).
+  private async absorbKnown(dialog: Dialog, parsed: ParsedResponse): Promise<void> {
+    const updates = this.toKnown((parsed as { known_updates?: unknown }).known_updates);
+    if (Object.keys(updates).length === 0) return;
+    const current = this.toKnown(dialog.known);
+    const merged = { ...current, ...updates };
+    const changed = Object.keys(merged).some((k) => merged[k] !== current[k]);
+    if (changed) {
+      await this.dialogRepo.setKnown(dialog.id, merged);
+      dialog.known = merged;
+    }
+  }
+
+  // Стоп-точка подтверждения товара на роутере. Модель НАДЁЖНО пишет «Правильно понимаю,
+  // вас интересует X?», но упорно ставит next_process (уходит в ветку) — и подтверждение
+  // затирается следующим шагом. Ловим этот случай и НЕ даём уйти: показываем вопрос, ждём
+  // ответ клиента. На следующий ход (последняя реплика бота — уже подтверждение) не держим.
+  private shouldHoldForConfirmation(task: Task, parsed: ParsedResponse, _dialog: Dialog, history: { role: string; content: string }[]): boolean {
+    const isRouter = task.task_description.includes('"next_process"');
+    const routing = typeof (parsed as { next_process?: unknown }).next_process === "number";
+    // Ориентируемся на САМ текст роутера (он пишет подтверждение стабильно), а не на ключ known —
+    // ключи модель называет по-разному («product»/«товар»), а формулировку подтверждения держит.
+    const CONFIRM = /правильно (понима|ли я понял)|вас интересует[^?]{0,80}\?/i;
+    const isConfirmation = CONFIRM.test(parsed.response_text ?? "");
+    const lastBot = [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
+    const alreadyAsked = CONFIRM.test(lastBot);
+    return isRouter && routing && isConfirmation && !alreadyAsked;
   }
 
   private async loadTask(dialog: Dialog): Promise<Task> {

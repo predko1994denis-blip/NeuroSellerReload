@@ -38,6 +38,7 @@ const emptyStep = (): StepFields & { [k: string]: unknown } => ({
   required: true,
   maxAttempts: 3,
   rules: [],
+  acceptsImage: false,
 });
 
 function toStepInput(d: StepFields): StepInput {
@@ -47,6 +48,7 @@ function toStepInput(d: StepFields): StepInput {
     maxAttempts: d.maxAttempts,
     fieldName: d.fieldName?.trim() || undefined,
     rules: d.rules.filter((r) => r.text.trim()).map((r) => ({ type: r.type, text: r.text.trim() })),
+    acceptsImage: d.acceptsImage ?? false,
   };
 }
 
@@ -91,9 +93,10 @@ function Flow({ botId, companyName, scenario, onClose, onGenerated }: Props) {
   const [showStyle, setShowStyle] = useState(false);
   const [style, setStyle] = useState<ScenarioStyle>(scenario?.style ?? DEFAULT_SCENARIO_STYLE);
   const [forceRegenerate, setForceRegenerate] = useState(false);
-  const [goals, setGoals] = useState<string[]>(scenario?.goals ?? []);
+  const [goals, setGoals] = useState<string[]>(scenario?.goals ?? []); // позитивные цели — с чем бот помогает
   const [nonGoals, setNonGoals] = useState<string[]>(scenario?.non_goals ?? []);
-  const [showGoals, setShowGoals] = useState(false);
+  const [showGoals, setShowGoals] = useState(false); // панель «Вне задач» (non-goals)
+  const [showPositiveGoals, setShowPositiveGoals] = useState(false); // панель «Цели бота»
 
   const initial = useMemo(() => loadInitialNodesEdges(scenario), [scenario]);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(initial.nodes);
@@ -319,10 +322,16 @@ function Flow({ botId, companyName, scenario, onClose, onGenerated }: Props) {
           🎨 Стиль
         </button>
         <button
-          onClick={() => setShowGoals(true)}
+          onClick={() => setShowPositiveGoals(true)}
           className="border border-slate-300 text-slate-700 rounded-lg px-3 py-1.5 text-sm hover:bg-slate-50"
         >
           🎯 Цели {goals.length > 0 ? `(${goals.length})` : ""}
+        </button>
+        <button
+          onClick={() => setShowGoals(true)}
+          className="border border-slate-300 text-slate-700 rounded-lg px-3 py-1.5 text-sm hover:bg-slate-50"
+        >
+          🚫 Вне задач {nonGoals.length > 0 ? `(${nonGoals.length})` : ""}
         </button>
         <div className="ml-auto flex items-center gap-3">
           {error && <span className="text-red-600 text-sm max-w-md">{error}</span>}
@@ -403,50 +412,17 @@ function Flow({ botId, companyName, scenario, onClose, onGenerated }: Props) {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-1">
-              <h2 className="text-lg font-bold text-slate-900">🎯 Цели сценария</h2>
+              <h2 className="text-lg font-bold text-slate-900">🚫 Чего бот НЕ делает</h2>
               <button onClick={() => setShowGoals(false)} className="text-slate-400 hover:text-slate-600 text-xl leading-none">
                 ×
               </button>
             </div>
             <p className="text-xs text-slate-400 mb-4">
-              Что реально может решить клиент с помощью этого бота. Если сообщение клиента не подходит ни под один
-              пункт — бот вежливо откажет и объяснит, чем может помочь, вместо того чтобы гадать.
+              Запросы, с которыми бот НЕ помогает — например «отменить заказ», «узнать статус доставки». Если клиент
+              попросит такое, бот честно скажет, что не умеет, и предложит продолжить оформление или остановиться.
             </p>
 
-            <div className="flex flex-col gap-2">
-              {goals.map((g, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <input
-                    value={g}
-                    onChange={(e) =>
-                      setGoals((gs) => gs.map((x, gi) => (gi === i ? e.target.value : x)))
-                    }
-                    placeholder="Например: помочь подобрать автозапчасть"
-                    className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                  />
-                  <button
-                    onClick={() => setGoals((gs) => gs.filter((_, gi) => gi !== i))}
-                    className="text-slate-400 hover:text-red-600 text-lg leading-none px-1"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-              <button
-                onClick={() => setGoals((gs) => [...gs, ""])}
-                className="text-sm text-red-600 hover:text-red-700 text-left mt-1"
-              >
-                + добавить цель
-              </button>
-            </div>
-
-            <div className="mt-5 pt-4 border-t border-slate-100">
-              <h3 className="text-sm font-bold text-slate-900 mb-1">🚫 НЕ помогаем с (пограничные случаи)</h3>
-              <p className="text-xs text-slate-400 mb-3">
-                Примеры запросов, которые легко спутать с целями выше, но с которыми бот НЕ должен пытаться помочь
-                (например, статус существующего заказа — похоже на тему товаров, но это не то же самое, что подбор
-                нового товара).
-              </p>
+            <div>
               <div className="flex flex-col gap-2">
                 {nonGoals.map((g, i) => (
                   <div key={i} className="flex items-center gap-2">
@@ -455,7 +431,7 @@ function Flow({ botId, companyName, scenario, onClose, onGenerated }: Props) {
                       onChange={(e) =>
                         setNonGoals((gs) => gs.map((x, gi) => (gi === i ? e.target.value : x)))
                       }
-                      placeholder="Например: узнать статус уже оформленного заказа"
+                      placeholder="Например: отменить заказ"
                       className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
                     />
                     <button
@@ -470,13 +446,68 @@ function Flow({ botId, companyName, scenario, onClose, onGenerated }: Props) {
                   onClick={() => setNonGoals((gs) => [...gs, ""])}
                   className="text-sm text-red-600 hover:text-red-700 text-left mt-1"
                 >
-                  + добавить пограничный случай
+                  + добавить
                 </button>
               </div>
             </div>
 
             <button
               onClick={() => setShowGoals(false)}
+              className="mt-6 w-full bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg px-4 py-2.5"
+            >
+              Готово
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showPositiveGoals && (
+        <div
+          className="fixed inset-0 bg-black/40 flex items-center justify-center px-4 z-50"
+          onClick={() => setShowPositiveGoals(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 w-full max-w-lg max-h-[85vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-lg font-bold text-slate-900">🎯 С чем помогает бот</h2>
+              <button onClick={() => setShowPositiveGoals(false)} className="text-slate-400 hover:text-slate-600 text-xl leading-none">
+                ×
+              </button>
+            </div>
+            <p className="text-xs text-slate-400 mb-4">
+              Цели, ради которых бот существует — например «оформить заказ». Когда клиент просит что-то постороннее,
+              бот предложит именно эти цели, а не выдуманные темы. Оставь только то, с чем он реально помогает.
+            </p>
+
+            <div className="flex flex-col gap-2">
+              {goals.map((g, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input
+                    value={g}
+                    onChange={(e) => setGoals((gs) => gs.map((x, gi) => (gi === i ? e.target.value : x)))}
+                    placeholder="Например: оформить заказ"
+                    className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                  />
+                  <button
+                    onClick={() => setGoals((gs) => gs.filter((_, gi) => gi !== i))}
+                    className="text-slate-400 hover:text-red-600 text-lg leading-none px-1"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              <button
+                onClick={() => setGoals((gs) => [...gs, ""])}
+                className="text-sm text-red-600 hover:text-red-700 text-left mt-1"
+              >
+                + добавить
+              </button>
+            </div>
+
+            <button
+              onClick={() => setShowPositiveGoals(false)}
               className="mt-6 w-full bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg px-4 py-2.5"
             >
               Готово
@@ -522,15 +553,18 @@ function NodePanel({
   const RULE_TYPE_LABELS: Record<StepRuleType, string> = {
     example: "Пример",
     validation: "Валидация",
-    custom: "Другое",
+    style: "Стиль",
   };
+  // Тип правила защищён от случайной смены: меняется только после двойного клика по нему.
+  const [unlockedRuleType, setUnlockedRuleType] = useState<number | null>(null);
 
   function updateRule(i: number, patch: Partial<StepRule>) {
     onChange({ rules: data.rules.map((r, idx) => (idx === i ? { ...r, ...patch } : r)) });
   }
 
   function addRule() {
-    onChange({ rules: [...data.rules, { type: "custom", text: "" }] });
+    setUnlockedRuleType(data.rules.length); // новое правило создаётся уже разблокированным — блок включается только после первого выбора типа
+    onChange({ rules: [...data.rules, { type: "style", text: "" }] });
   }
 
   function removeRule(i: number) {
@@ -574,14 +608,13 @@ function NodePanel({
         </label>
       </div>
 
-      <label className="text-sm font-medium text-slate-700">
-        Имя поля данных (необязательно)
+      <label className="flex items-center gap-1.5 text-sm text-slate-700">
         <input
-          value={data.fieldName ?? ""}
-          onChange={(e) => onChange({ fieldName: e.target.value })}
-          placeholder="напр. phone, car_model"
-          className={field}
+          type="checkbox"
+          checked={data.acceptsImage ?? false}
+          onChange={(e) => onChange({ acceptsImage: e.target.checked })}
         />
+        📷 Принимает фото как источник информации
       </label>
 
       <div className="border-t border-slate-200 pt-3">
@@ -603,31 +636,51 @@ function NodePanel({
           {data.rules.map((rule, i) => (
             <div key={i} className="border border-slate-200 rounded-lg p-2 bg-white">
               <div className="flex items-center gap-2 mb-1.5">
-                <select
-                  value={rule.type}
-                  onChange={(e) => updateRule(i, { type: e.target.value as StepRuleType })}
-                  className="text-xs border border-slate-300 rounded px-1.5 py-1"
+                {/* Тип защищён от случайного перетаскивания/смены: разблокируется двойным кликом. */}
+                <div
+                  onDoubleClick={() => setUnlockedRuleType(i)}
+                  title={unlockedRuleType === i ? "Выбери тип" : "Двойной клик, чтобы сменить тип"}
+                  className="relative"
                 >
-                  {(Object.keys(RULE_TYPE_LABELS) as StepRuleType[]).map((t) => (
-                    <option key={t} value={t}>
-                      {RULE_TYPE_LABELS[t]}
-                    </option>
-                  ))}
-                </select>
+                  <select
+                    value={rule.type}
+                    disabled={unlockedRuleType !== i}
+                    onChange={(e) => {
+                      updateRule(i, { type: e.target.value as StepRuleType });
+                      setUnlockedRuleType(null);
+                    }}
+                    className={
+                      "text-xs border rounded px-1.5 py-1 " +
+                      (unlockedRuleType === i
+                        ? "border-red-400"
+                        : "border-slate-300 bg-slate-50 text-slate-500 pointer-events-none")
+                    }
+                  >
+                    {(Object.keys(RULE_TYPE_LABELS) as StepRuleType[]).map((t) => (
+                      <option key={t} value={t}>
+                        {RULE_TYPE_LABELS[t]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {unlockedRuleType !== i && <span className="text-[10px] text-slate-300">🔒 2× клик</span>}
                 <button onClick={() => removeRule(i)} className="ml-auto text-slate-300 hover:text-red-500 text-xs">
                   ×
                 </button>
               </div>
               <textarea
                 value={rule.text}
-                onChange={(e) => updateRule(i, { text: e.target.value })}
+                onChange={(e) => {
+                  updateRule(i, { text: e.target.value });
+                  if (unlockedRuleType === i) setUnlockedRuleType(null); // тип фиксируется, как только начали писать текст правила
+                }}
                 rows={2}
                 placeholder={
                   rule.type === "example"
                     ? "напр. БМВ — пример марки, Х6 — пример модели"
                     : rule.type === "validation"
                       ? "напр. номер телефона должен быть из 10-13 цифр"
-                      : "любое дополнительное правило для этого шага"
+                      : "напр. в первом сообщении упоминай, что ты помощник Papl.by; пиши коротко и мягко"
                 }
                 className="w-full text-xs border border-slate-200 rounded px-2 py-1.5 outline-none focus:border-red-400 resize-y"
               />

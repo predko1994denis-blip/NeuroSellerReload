@@ -29,6 +29,12 @@ export async function authenticate(
   return { userId: user.id, role: user.role, clientId: user.client_id };
 }
 
+// Гейт «только admin»: редактирование сценариев/промптов доступно лишь настройщику (admin).
+// manager (владелец компании) может смотреть диалоги/стату и давать фидбек, но НЕ править промпты.
+export function requireAdmin(auth: AuthContext): void {
+  if (auth.role !== "admin") throw new AuthError("Недостаточно прав: редактирование доступно только администратору");
+}
+
 // Возвращает client_id для фильтрации данных, либо null, если роль admin (видит всё без фильтра)
 export function scopeClientId(auth: AuthContext, requestedClientId?: number): number | null {
   if (auth.role === "admin") return requestedClientId ?? null;

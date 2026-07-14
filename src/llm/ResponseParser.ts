@@ -1,12 +1,36 @@
 import type { IResponseParser, ParsedResponse } from "../entities/LLMContract";
 
 export class ResponseParser implements IResponseParser {
+  // Пытается достать валидный JSON-объект из «грязного» ответа: снимает markdown-обёртку и берёт
+  // подстроку от первой { до последней }. Возвращает объект или null (не спасли — пусть ретрай/ошибка).
+  private static salvageJson(raw: string): Record<string, unknown> | null {
+    let s = raw.trim();
+    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence?.[1]) s = fence[1].trim();
+    const start = s.indexOf("{");
+    const end = s.lastIndexOf("}");
+    if (start === -1 || end <= start) return null;
+    try {
+      const obj = JSON.parse(s.slice(start, end + 1));
+      return obj && typeof obj === "object" && !Array.isArray(obj) ? (obj as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+
   parse(rawResponse: string): ParsedResponse {
     let json: Record<string, unknown>;
     try {
       json = JSON.parse(rawResponse);
     } catch {
-      throw new Error(`LLM вернула не-JSON ответ: ${rawResponse}`);
+      // Спасаем частые кейсы: модель обернула в ```json … ``` или добавила текст до/после объекта.
+      // Вытаскиваем подстроку от первой { до последней } и пробуем ещё раз.
+      const salvaged = ResponseParser.salvageJson(rawResponse);
+      if (salvaged) {
+        json = salvaged;
+      } else {
+        throw new Error(`LLM вернула не-JSON ответ: ${rawResponse}`);
+      }
     }
 
     // Алиасы: модель иногда называет поле сообщения по-другому (final_message, message, text,
@@ -41,8 +65,11 @@ export class ResponseParser implements IResponseParser {
 
     const taskCompleted = json.current_task_completed ?? json.completed;
 
+    // Пустой/отсутствующий bot_message — это НЕ ошибка: роутер при тихой маршрутизации возвращает
+    // bot_message=null + next_process (говорит следующий шаг). Раньше это роняло диалог в
+    // «технические неполадки». Дефолтим в "" — follow-up продолжит и следующий шаг заговорит.
     if (typeof responseText !== "string") {
-      throw new Error(`В ответе LLM нет response_text/bot_message: ${rawResponse}`);
+      responseText = "";
     }
     if (typeof taskCompleted !== "boolean") {
       throw new Error(`В ответе LLM нет current_task_completed/completed: ${rawResponse}`);

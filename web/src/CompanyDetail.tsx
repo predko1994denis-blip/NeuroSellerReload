@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import { listBots, createBot, type Bot, type Company } from "./api";
 import { BotDetail } from "./BotDetail";
+import { ManagerBotView } from "./ManagerBotView";
+import { getSession } from "./auth";
 
-export function CompanyDetail({ company, onBack }: { company: Company; onBack: () => void }) {
+export function CompanyDetail({ company, onBack }: { company: Company; onBack?: () => void }) {
+  const isAdmin = getSession()?.role === "admin";
   const [bots, setBots] = useState<Bot[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -13,7 +16,10 @@ export function CompanyDetail({ company, onBack }: { company: Company; onBack: (
     setLoading(true);
     setError(null);
     try {
-      setBots(await listBots(company.id));
+      const list = await listBots(company.id);
+      setBots(list);
+      // У менеджера обычно один бот — не заставляем выбирать его из списка.
+      if (!isAdmin && list.length === 1) setSelectedBot(list[0]!);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка загрузки");
     } finally {
@@ -26,26 +32,37 @@ export function CompanyDetail({ company, onBack }: { company: Company; onBack: (
   }, [company.id]);
 
   if (selectedBot) {
-    return <BotDetail bot={selectedBot} onBack={() => setSelectedBot(null)} />;
+    // Настройщик — полный конструктор; менеджер — только диалоги/стата/пометки.
+    // Если у менеджера всего один бот — назад возвращаться некуда, кнопку не показываем.
+    const canGoBack = isAdmin || bots.length > 1;
+    return isAdmin ? (
+      <BotDetail bot={selectedBot} onBack={() => setSelectedBot(null)} />
+    ) : (
+      <ManagerBotView bot={selectedBot} onBack={canGoBack ? () => setSelectedBot(null) : undefined} />
+    );
   }
 
   return (
     <main className="max-w-4xl mx-auto px-6 py-10">
-      <button onClick={onBack} className="text-sm text-slate-500 hover:text-red-600 mb-4 transition-colors">
-        ← Назад к компаниям
-      </button>
+      {onBack && (
+        <button onClick={onBack} className="text-sm text-slate-500 hover:text-red-600 mb-4 transition-colors">
+          ← Назад к компаниям
+        </button>
+      )}
 
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">{company.email}</h1>
-          <p className="text-slate-500 mt-1">Боты компании · всего {bots.length}</p>
+          <h1 className="text-2xl font-bold text-slate-900">{isAdmin ? company.email : "Ваши боты"}</h1>
+          <p className="text-slate-500 mt-1">{isAdmin ? `Ботов: ${bots.length}` : ""}</p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg px-5 py-2.5 transition-colors"
-        >
-          + Новый бот
-        </button>
+        {isAdmin && (
+          <button
+            onClick={() => setShowCreate(true)}
+            className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg px-5 py-2.5 transition-colors"
+          >
+            + Новый бот
+          </button>
+        )}
       </div>
 
       {loading && <p className="text-slate-400">Загрузка…</p>}
@@ -53,13 +70,13 @@ export function CompanyDetail({ company, onBack }: { company: Company; onBack: (
 
       {!loading && !error && bots.length === 0 && (
         <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-12 text-center text-slate-400">
-          У компании пока нет ботов.
+          Пока нет ботов.
         </div>
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {bots.map((b) => (
-          <BotCard key={b.id} bot={b} onClick={() => setSelectedBot(b)} />
+          <BotCard key={b.id} bot={b} isAdmin={isAdmin} onClick={() => setSelectedBot(b)} />
         ))}
       </div>
 
@@ -77,28 +94,25 @@ export function CompanyDetail({ company, onBack }: { company: Company; onBack: (
   );
 }
 
-function BotCard({ bot, onClick }: { bot: Bot; onClick: () => void }) {
+function BotCard({ bot, isAdmin, onClick }: { bot: Bot; isAdmin: boolean; onClick: () => void }) {
   return (
     <div
       onClick={onClick}
-      className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 hover:shadow-md transition-shadow cursor-pointer"
+      className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 hover:shadow-md hover:border-slate-300 transition-all cursor-pointer"
     >
       <div className="flex items-start justify-between">
-        <div>
-          <div className="font-semibold text-slate-900 flex items-center gap-2">
-            <span>🤖</span> Бот #{bot.id}
+        <div className="font-semibold text-slate-900">
+          {bot.company_name || `Бот #${bot.id}`}
+        </div>
+        {isAdmin && (
+          <div className="flex flex-col items-end gap-1">
+            <span className={`text-xs font-medium rounded-full px-2.5 py-1 ${bot.rag_enabled ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-400"}`}>
+              RAG {bot.rag_enabled ? "вкл" : "выкл"}
+            </span>
           </div>
-          <div className="text-sm text-slate-400 mt-1 font-mono">…{bot.token_tail}</div>
-        </div>
-        <div className="flex flex-col items-end gap-1">
-          <span className={`text-xs font-medium rounded-full px-2.5 py-1 ${bot.rag_enabled ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-400"}`}>
-            RAG {bot.rag_enabled ? "вкл" : "выкл"}
-          </span>
-          <span className={`text-xs font-medium rounded-full px-2.5 py-1 ${bot.teacher_mode_enabled ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-400"}`}>
-            Учитель {bot.teacher_mode_enabled ? "вкл" : "выкл"}
-          </span>
-        </div>
+        )}
       </div>
+      {isAdmin && <div className="text-sm text-slate-400 mt-1 font-mono">…{bot.token_tail}</div>}
     </div>
   );
 }

@@ -53,6 +53,8 @@ CREATE TABLE tasks (
   max_attempts INTEGER NOT NULL DEFAULT 3,
   required BOOLEAN NOT NULL DEFAULT true, -- при исчерпании попыток обязательный шаг ведёт в fallback, необязательный — просто дальше
   is_fallback BOOLEAN NOT NULL DEFAULT false, -- true у completion-задачи для случая "не смогли собрать обязательные данные"
+  accepts_image BOOLEAN NOT NULL DEFAULT false, -- шаг умеет принимать фото как источник информации (см. ImageStepReader)
+  title TEXT NOT NULL DEFAULT '', -- цель шага простым текстом (для ImageStepReader и логов, не для промпта LLM)
   context_strategy_id INTEGER,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (process_id, task_number)
@@ -68,7 +70,10 @@ CREATE TABLE dialogs (
   task_attempts JSONB NOT NULL DEFAULT '{}',
   is_active BOOLEAN NOT NULL DEFAULT true,
   greeted BOOLEAN NOT NULL DEFAULT false,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  mentioned_products JSONB NOT NULL DEFAULT '[]',
+  known JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  taken_over_by INTEGER REFERENCES users(id) ON DELETE SET NULL -- менеджер перехватил диалог: бот больше не отвечает автоматически
 );
 
 -- быстрый поиск активного диалога юзера в боте (главный запрос всего флоу)
@@ -79,10 +84,23 @@ CREATE TABLE messages (
   dialog_id INTEGER NOT NULL REFERENCES dialogs(id) ON DELETE CASCADE,
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
   content TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  sent_by INTEGER REFERENCES users(id) ON DELETE SET NULL -- заполнено, если сообщение отправил менеджер вручную (не бот)
 );
 
 CREATE INDEX idx_messages_dialog_id ON messages (dialog_id);
+
+-- Пометки менеджера: «этот ответ бота плохой, надо было так». Настройщик потом ревьюит и правит промпты.
+CREATE TABLE message_feedback (
+  id SERIAL PRIMARY KEY,
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  suggested_answer TEXT NOT NULL,           -- как надо было ответить
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolved BOOLEAN NOT NULL DEFAULT false    -- настройщик разобрал пометку (поправил промпт)
+);
+
+CREATE INDEX idx_message_feedback_message ON message_feedback (message_id);
 
 CREATE TABLE bot_reminder_settings (
   id SERIAL PRIMARY KEY,

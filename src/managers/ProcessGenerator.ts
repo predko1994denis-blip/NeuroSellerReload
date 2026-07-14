@@ -1,9 +1,14 @@
 import type { TaskType } from "../entities/Task";
 
+// Версия фиксированного скелета (ENGINE): статусы, блоки [ВНЕ ЗАДАЧ]/[ПОБОЧНЫЙ]/[РЕПЛИКА], формат.
+// БАМПАЙ это число при ЛЮБОЙ правке текста ENGINE — тогда отпечаток кеша меняется и «Пересобрать»
+// регенерит промпты с новым скелетом БЕЗ галочки «Принудительно» (иначе кеш вернёт старый текст).
+const ENGINE_VERSION = 19;
+
 // Гибкое правило шага — вместо фиксированного набора полей пользователь добавляет
 // сколько угодно правил произвольного типа через "+" в конструкторе.
 export interface StepRule {
-  type: "example" | "validation" | "custom";
+  type: "example" | "validation" | "style";
   text: string;
 }
 
@@ -13,6 +18,7 @@ export interface StepInput {
   maxAttempts: number;
   fieldName?: string; // техническое имя JSON-поля, не правило — если не задано, модель придумает сама
   rules?: StepRule[];
+  acceptsImage?: boolean; // шаг принимает фото как источник информации (см. ImageStepReader)
 }
 
 // Кеш генерации для инкрементальной пересборки: если содержимое шага не изменилось с прошлого
@@ -64,18 +70,13 @@ function fingerprint(parts: Record<string, unknown>): string {
   return JSON.stringify(canonicalize(parts));
 }
 
+// Для мета-промпта важна ТОЛЬКО подсказка по значениям (example-правила) — она помогает подобрать
+// value_examples. Валидация и стиль в генерацию НЕ идут: их код кладёт в готовый промпт напрямую
+// (Правило значения / Заметка по стилю), иначе мета-промпт искажает (валидацию превращал в completed:false).
 function buildRulesBlock(rules: StepRule[] | undefined): string {
-  if (!rules || rules.length === 0) return "";
-  const lines = rules.map((r) => {
-    if (r.type === "example") {
-      return `- ПРИМЕР ОТ ПОЛЬЗОВАТЕЛЯ: «${r.text}». Разверни это в 2-3 полноценных примера в стиле пары «сообщение клиента → JSON», аналогичных по смыслу и формату (не копируй буквально, придумай похожие вариации), чтобы промпту было понятно, что именно относится к данным этого шага.`;
-    }
-    if (r.type === "validation") {
-      return `- ВАЛИДАЦИЯ: «${r.text}». Заложи это как строгое правило проверки — если данные не соответствуют условию, считай их неполученными (completed: false) и вежливо попроси уточнить/поправить.`;
-    }
-    return `- ДОПОЛНИТЕЛЬНОЕ ПРАВИЛО (учесть буквально и обязательно): ${r.text}`;
-  });
-  return `\nПРАВИЛА ОТ ПОЛЬЗОВАТЕЛЯ ДЛЯ ЭТОГО ШАГА (обязательны к исполнению):\n${lines.join("\n")}\n`;
+  const ex = (rules ?? []).filter((r) => r.type === "example").map((r) => r.text.trim()).filter(Boolean);
+  if (ex.length === 0) return "";
+  return `\nПОДСКАЗКА ПО ЗНАЧЕНИЯМ ОТ ПОЛЬЗОВАТЕЛЯ (учти при подборе value_examples — разверни в конкретные значения, дословно не копируй): ${ex.join("; ")}`;
 }
 
 // Формирует блок "защита цели" — не даёт модели уводить диалог на темы за пределами
@@ -194,8 +195,10 @@ interface BodyExample {
 
 interface StepBody {
   field_name?: string; // snake_case имя поля данных (только для collection)
+  entity_name?: string; // ЧИСТОЕ имя сущности (существительное, без глаголов) — для [ЦЕЛЬ ШАГА]
+  value_examples?: string[]; // 2-3 конкретных ПРИМЕРА ЗНАЧЕНИЯ сущности («BMW X6», «сделать заказ»)
   recognition?: string; // как распознавать этот тип данных (collection/routedStep)
-  examples: BodyExample[];
+  examples?: BodyExample[];
 }
 
 // Роль — фиксированный шаблон, одинаковый для всех шагов, отличается только целью.
@@ -219,11 +222,12 @@ const SPEECH_RULES = `[Как писать]
 // Технические FSM-правила — идентичны везде.
 const FSM_RULES = `[Технические правила (соблюдай строго)]
 - ПУСТОЙ latest_user_message = шаг только что стал активным, нового сообщения от клиента ещё нет. СРАЗУ проактивно задай вопрос этого шага, коротко и по-человечески. Нельзя молчать, прощаться или писать «если что — пишите» / «есть ещё вопросы?».
-- greeted=true → никогда не здоровайся снова. greeted=false и шаг это подразумевает → поздоровайся один раз.
+- greeted=true → никогда не здоровайся снова. greeted=false И latest_user_message пусто И history пустая (это самый первый ответ клиенту в этом диалоге) → ОБЯЗАТЕЛЬНО начни с приветствия и представься один раз, без исключений — это не опционально. greeted=false в остальных случаях (шаг сменился, но клиент уже что-то писал раньше) — поздоровайся, только если шаг это естественно подразумевает.
 - Не начинай заново: если данные шага уже собраны — не задавай вопрос шага снова.
 - Не повторяй свой предыдущий вопрос дословно (сверяйся с history) — переформулируй.
 - Не благодари канцелярски («Спасибо за информацию», «Записал»). Живое короткое подтверждение по имени можно.
-- НЕ ВЫДУМЫВАЙ факты, которых тебе не давали: цены, наличие, сроки, характеристики товара, часы работы, адреса, телефоны, скидки, любые конкретные обещания. Если клиент спрашивает такое, а у тебя нет этих данных — честно скажи, что точную информацию уточнит менеджер/человек, и вернись к своей цели. Не сочиняй числа, каналы связи или условия «чтобы красиво закрыть» вопрос.
+- НЕ ВЫДУМЫВАЙ факты, которых тебе не давали: цены, наличие, сроки, характеристики, часы работы, адреса, телефоны, скидки, обещания. ИСКЛЮЧЕНИЕ — БАЗА ЗНАНИЙ: если в самом конце промпта есть блок «Контекст из базы знаний» и в нём ЕСТЬ ответ на вопрос клиента — ответь по этим данным прямо (это не выдумка), а затем коротко вернись к вопросу текущего шага. Если такого блока нет или ответа в нём нет — не выдумывай и не отсылай к менеджеру: ты бот и отвечаешь только по своей базе знаний, поэтому честно и естественно дай понять, что этих данных у тебя нет, и вернись к своей цели. Не сочиняй числа и условия сам. (Это не отменяет штатное завершение диалога, где менеджер связывается с клиентом, — речь только про факты, которых нет в базе.)
+- mentioned_products: если в ПОСЛЕДНЕМ сообщении клиент упомянул конкретный товар/услугу из ассортимента (спросил про него, назвал, проявил интерес) — перечисли их короткими понятными названиями в этом массиве (пример: ["воздушный фильтр на Lada Vesta"]). Если конкретного товара он не называл — верни пустой массив []. Это память об интересе клиента, не выдумывай то, чего он не упоминал.
 - bot_message — единственное поле, которое видит пользователь. Весь текст для клиента (вопрос, приветствие, отказ, прощание) всегда в bot_message, и оно никогда не пустое, если есть что сказать.
 - Отвечай ТОЛЬКО одним строгим JSON-объектом, без markdown и текста вне JSON.`;
 
@@ -231,6 +235,7 @@ const FSM_RULES = `[Технические правила (соблюдай ст
 const RECOGNITION_RULES = `[Распознавание данных — общие правила]
 - Принимай ответ в любой естественной форме, извлекай суть, отбрасывай вводные слова, не требуй идеальной формы.
 - Проверяй ВСЮ history: если нужные для шага данные клиент уже называл раньше (даже мимоходом, отвечая на другой вопрос) — не переспрашивай, сразу считай данные собранными с этим значением.
+- Если задача шага — выяснить, что именно нужно клиенту (товар/услуга), а он в диалоге уже называл это конкретно (даже мимоходом или внутри вопроса «а есть …?») — НЕ спрашивай заново обобщённо. Исходи из того, что интересует именно названное, и уточни по нему, подставив то, что он реально упомянул («Правильно понимаю, вас интересует <то, что клиент назвал>?»). Если названо несколько — уточни, что из них оформляем.
 - Здравый смысл: если ответ явно нереалистичен для этого типа данных (например, неправдоподобный год, телефон из 3 цифр, отрицательное количество) — не принимай слепо, вежливо уточни; но не блокируй, если клиент осознанно подтверждает необычное значение.`;
 
 // Поведение при отказе — зависит только от обязательности и лимита попыток.
@@ -261,14 +266,15 @@ ${routes}
 }
 
 // Контракт [Формат ответа] — фиксированный, с правильным именем поля.
+// known_updates: объект с замеченными в последнем сообщении данными сценария (slot-filling).
 function buildFormatBlock(kind: StepKind, fieldName: string): string {
   if (kind === "completion") {
-    return `[Формат ответа]\n{"completed": boolean, "bot_message": string, "current_task_completed": boolean}\nПоле текста для клиента ВСЕГДА называется строго "bot_message". Отвечай одним JSON-объектом, без markdown.`;
+    return `[Ответ] Один строгий JSON, текст клиенту только в "bot_message":\n{"completed": boolean, "bot_message": string, "current_task_completed": boolean, "known_updates": object}`;
   }
   if (kind === "router" || kind === "routedStep") {
-    return `[Формат ответа]\n{"bot_message": string, "next_process": number|null, "current_task_completed": boolean}\nПоле текста для клиента ВСЕГДА называется строго "bot_message". Отвечай одним JSON-объектом, без markdown.`;
+    return `[Ответ] Один строгий JSON, текст клиенту только в "bot_message":\n{"bot_message": string, "next_process": number|null, "current_task_completed": boolean, "known_updates": object}`;
   }
-  return `[Формат ответа]\n{"completed": boolean, "${fieldName}": string, "bot_message": string, "current_task_completed": boolean}\nПоле текста для клиента ВСЕГДА называется строго "bot_message". Отвечай одним JSON-объектом, без markdown.`;
+  return `[Ответ] Один строгий JSON, текст клиенту только в "bot_message":\n{"completed": boolean, "${fieldName}": string, "bot_message": string, "current_task_completed": boolean, "known_updates": object}`;
 }
 
 // Санитайзер имени поля: только латиница/цифры/подчёркивания, начинается с буквы.
@@ -296,6 +302,103 @@ function renderExample(ex: BodyExample, kind: StepKind, fieldName: string): stri
   return `${clientLabel} → {"completed": ${done}, ${jsonStr(fieldName)}: ${jsonStr(ex.data ?? "")}, "bot_message": ${jsonStr(ex.bot_message)}, "current_task_completed": ${done}}`;
 }
 
+// ── УНИВЕРСАЛЬНЫЙ СКЕЛЕТ (ENGINE) — фиксированные блоки, одинаковы на всех шагах ──
+const U_INPUT = `Вход: latest_user_message (пусто = шаг только активировался), greeted, known, история переписки.
+ГЛАВНОЕ ПРАВИЛО: слово клиента в ТЕКУЩЕМ сообщении важнее того, что в known.
+На фактические вопросы про товар/цену/срок отвечает ОТДЕЛЬНАЯ справка — ты на них не отвечаешь и не реагируешь, просто ведёшь свой шаг.`;
+
+const U_SIDE = `[ПОБОЧНЫЙ СБОР] Значения ДРУГИХ сущностей из списка, мелькнувшие в сообщении, — тоже занеси в known_updates (значения нормализуй; товар — под ключом "product"). Уже собранное не переписывай, КРОМЕ явного исправления клиентом.
+[ИЗМЕНЕНИЕ РАНЕЕ СОБРАННОГО] Если клиент исправил сущность, собранную РАНЬШЕ (не твоего шага) — перезапиши её в known_updates И коротко подтверди изменение. Единственное исключение к правилу РЕПЛИКА.`;
+
+const U_REPLY = `[РЕПЛИКА — ТОЛЬКО СВОЯ СУЩНОСТЬ] В bot_message называй ТОЛЬКО значение сущности этого шага. Другие сущности (марку, модель, год, VIN, имя, телефон, ник) в текст НЕ добавляй, даже если они прозвучали вместе. Перед выдачей перечитай bot_message и вырежи всё чужое.`;
+
+// Роль-шапка (универсальная) + слайдеры стиля пользователя.
+function uRole(companyName: string): string {
+  return `Ты — помощник компании ${companyName} в Telegram. Ведёшь ОДИН шаг диалога. Говоришь от лица ${companyName}, своё имя не выдумываешь. Формулировки варьируй, не шаблонно. Повторно не здоровайся и не представляйся, если greeted=true или в истории уже здоровался. Если же greeted=false И latest_user_message пусто И история пустая (это самый первый ответ клиенту за весь диалог) — ОБЯЗАТЕЛЬНО начни реплику с приветствия и представься коротко, это не опционально.`;
+}
+
+const uEntities = (slots: string[]): string =>
+  slots.length === 0 ? "" : `[СУЩНОСТИ СЦЕНАРИЯ] (лови любые из них в known_updates; ключи латиницей, товар — под ключом "product"):\n${slots.map((s) => `- ${s}`).join("\n")}`;
+
+// Правила пользователя, разложенные по типу (устойчиво к старой метке "custom" — всё, что не example/validation, считаем стилем).
+const ruleExamples = (rules?: StepRule[]): string => (rules ?? []).filter((r) => r.type === "example").map((r) => r.text).join("; ");
+const ruleValid = (rules?: StepRule[]): string => (rules ?? []).filter((r) => r.type === "validation").map((r) => r.text).join(" ");
+const ruleStyle = (rules?: StepRule[]): string => (rules ?? []).filter((r) => r.type !== "example" && r.type !== "validation").map((r) => r.text).join(" ");
+
+// Примеры значений сущности: сперва явные example-правила пользователя, иначе — извлечённые значения из сгенерированных LLM примеров.
+// Примеры значений — всегда КОНКРЕТНЫЕ значения от мета-промпта (он разворачивает и подсказку
+// пользователя в чистые значения). Дословный текст example-правила сюда НЕ кладём.
+function valueExamples(_rules: StepRule[] | undefined, body: StepBody): string {
+  const vals = (body.value_examples ?? []).filter((v) => !!v && v.trim().length > 0);
+  return [...new Set(vals)].slice(0, 4).map((v) => `«${v}»`).join(", ");
+}
+
+function uStatus(key: string, entityDesc: string, required: boolean): string {
+  const opt = required ? "" : `\nНЕОБЯЗАТЕЛЬНЫЙ ШАГ: клиент не знает/не хочет отвечать («не помню», «не знаю») → current_task_completed=true с пустым значением, не дави.`;
+  return `[СТАТУС СУЩНОСТИ → ДЕЙСТВИЕ]
+A) ПРИНЯТА — клиент в текущем сообщении назвал сущность, подтвердил её («да», «верно») или исправил на другую → known_updates["${key}"] = значение, current_task_completed=true, bot_message="".
+B) ПОД ВОПРОСОМ — сущность есть ТОЛЬКО в known (пришла мимоходом), клиент про неё сейчас молчит → current_task_completed=false, bot_message=«<значение> — верно?» (уточни один раз).
+C) НЕТ — сущности нигде нет → current_task_completed=false, задай короткий вопрос про «${entityDesc}». ВСЕГДА называй в нём варианты сущности из «Примеры значений» (например «заказ» / «консультация») — не подменяй их темой сообщения клиента. Но саму ФОРМУЛИРОВКУ вокруг вариантов КАЖДЫЙ РАЗ меняй (обёртку, порядок слов) — дословно одну и ту же фразу не повторяй, иначе звучишь как робот. Если у сущности нет фиксированных вариантов (телефон, VIN, год) — просто спроси её, примеры как ориентир.
+D) НЕОДНОЗНАЧНО — значение неполное/неясное по правилу, или в сообщении путаница → current_task_completed=false, точечный уточняющий вопрос. (Ясно названное значение — это A, а не D.)${opt}`;
+}
+
+// Шаг-подтверждение (сводка собранного + «всё верно?») определяем детерминированно по цели,
+// а не полагаемся на то, что LLM сама это распознает — иначе она читает value_examples
+// («подтверждаю»/«да») и тупо просит клиента их написать вместо перечисления собранных данных.
+function isConfirmationStep(goal: string, entityDesc: string): boolean {
+  return /подтверд/i.test(goal) || /подтвержд/i.test(entityDesc);
+}
+
+// Отдельный блок для шага-подтверждения — заменяет [СТАТУС СУЩНОСТИ] целиком. Никаких
+// «варианты из Примеры значений»: единственная задача — красиво перечислить known и спросить «всё верно?».
+function uConfirm(key: string): string {
+  return `[ПОДТВЕРЖДЕНИЕ]
+ПРИОРИТЕТ: согласие клиента (да / верно / ок / оформляйте / подтверждаю) на этом шаге ВСЕГДА значит «подтвердить заказ». НИКОГДА не трактуй такое согласие как «вне задач» или «прервать» — блок [ВНЕ ЗАДАЧ/СТОП] применяй ТОЛЬКО если клиент ЯВНО своими словами просит другое действие, сменить цель или остановиться.
+- Клиент ещё не подтвердил (latest пустой или это не согласие/не правка) → current_task_completed=false. Собери ВСЕ уже известные значения из known в одну живую человеческую фразу-сводку (перечисли их естественно, через запятую) и спроси «всё верно?». НЕ проси писать «да»/«подтверждаю» и НЕ называй никаких «примеров значений» — просто покажи данные и задай вопрос.
+- Клиент согласился («да», «верно», «ок», «оформляйте») → known_updates["${key}"]=true, current_task_completed=true, bot_message="".
+- Клиент что-то поправил или захотел сменить цель → обнови known_updates / действуй по [ВНЕ ЗАДАЧ/СТОП], сводку покажи заново, current_task_completed=false.`;
+}
+
+function uRouting(branches?: { condition: string; targetProcessNumber: number }[]): string {
+  const list = (branches ?? []).map((b) => `- ${b.condition} → next_process: ${b.targetProcessNumber}`).join("\n");
+  return `[ВЕТВЛЕНИЕ] Определи, в какую ветку вести диалог (next_process):
+1. Клиент ответил ясно или подтвердил → next_process = номер ветки, bot_message="", current_task_completed=true.
+2. Не ясно, куда вести (это касается и самого первого проактивного вопроса, когда шаг только активировался, а не только переспроса) → next_process=null и один короткий вопрос, который ЯВНО называет своими словами КАЖДЫЙ вариант из веток ниже (коротко и естественно, не копируя условие дословно). НИКОГДА не спрашивай абстрактно «с чем могу помочь» / «что вас интересует» — раз варианты веток известны, всегда предлагай именно их напрямую.
+
+Ветки:
+${list}`;
+}
+
+// Позитивные цели бота — с чем он РЕАЛЬНО помогает. Чтобы, предлагая помощь, бот называл
+// именно их, а не выдумывал общие темы («выбор запчастей» и т.п.).
+function uGoals(goals: string[]): string {
+  const list = (goals ?? []).map((g) => g.trim()).filter(Boolean);
+  if (list.length === 0) return "";
+  return `[ЦЕЛИ БОТА] Ты помогаешь клиенту ТОЛЬКО с этим: ${list.join("; ")}. Ничего сверх этого не предлагай и не выдумывай. Когда предлагаешь свою помощь — называй ИМЕННО эти цели (по смыслу), а не общие фразы вроде «чем могу помочь».`;
+}
+
+// Блок «вне задач / стоп» — глобальный, из non-goals (цели, с которыми бот НЕ помогает).
+// Обрабатывает отмену: «не умею → продолжить или остановиться?»; остановиться → abort:true.
+// includeStopOffer=false на шаге подтверждения: там правило «да → прервать» конфликтует с «да → подтвердить».
+function uOutOfScope(nonGoals: string[], includeStopOffer: boolean = true): string {
+  const list = (nonGoals ?? []).map((g) => g.trim()).filter(Boolean);
+  if (list.length === 0) return "";
+  const stopOfferBullet = includeStopOffer
+    ? `\n- known.__stop_offer="true" значит: прошлым ходом ты предлагал «помочь с нашей задачей ИЛИ прервать диалог?» (в history этого не видно). Разбери ответ клиента: (а) согласие продолжить/помочь («да», «помоги», «продолжай», «оформить», «давай») → НЕ предлагай снова и НЕ прерывай, просто веди текущий шаг дальше (задай его вопрос), out_of_scope и abort НЕ ставь; (б) явная просьба остановиться («прервать», «стоп», «не надо», «хватит») → "abort": true с тёплым прощанием; (в) иначе — веди шаг как обычно.`
+    : "";
+  return `[ВНЕ ЗАДАЧ / СТОП] Бот НЕ помогает со следующим: ${list.join("; ")}.
+- Если клиент ПРЯМО СЕЙЧАС (в latest_user_message) просит что-то из этого — верни "out_of_scope": true. В bot_message: (1) коротко скажи, что бот этого не умеет; (2) ОБЯЗАТЕЛЬНО заверши реплику вопросом с ДВУМЯ вариантами — помочь ИМЕННО с тем, что указано в [ЦЕЛИ БОТА] (называй эти цели, не общие фразы) ИЛИ прервать диалог. Вариант «прервать/остановить диалог» пропускать НЕЛЬЗЯ — он должен быть в КАЖДОЙ такой реплике (например: «…Могу помочь с оформлением, или хотите прервать диалог?»). (Этот обмен система в историю не сохранит.)
+- Если клиент ЯВНО просит прервать / остановиться / стоп / хватит → верни "abort": true и короткую тёплую прощальную фразу в bot_message.${stopOfferBullet}
+- Любое ДРУГОЕ сообщение (новый вопрос, ответ по твоему шагу и т.п.) — веди свой шаг по статусам A/B/C/D как обычно, про этот отказ НИ СЛОВА, out_of_scope НЕ ставь.`;
+}
+
+function uFormat(kind: StepKind, hasAbort: boolean): string {
+  const a = hasAbort ? `,"abort":false,"out_of_scope":false` : "";
+  if (kind === "completion") return `[ОТВЕТ] строго JSON, без markdown: {"bot_message":"...","current_task_completed":true}`;
+  if (kind === "router" || kind === "routedStep") return `[ОТВЕТ] строго JSON, без markdown: {"bot_message":"...","known_updates":{},"next_process":null,"current_task_completed":false${a}}`;
+  return `[ОТВЕТ] строго JSON, без markdown: {"bot_message":"...","known_updates":{},"current_task_completed":false${a}}`;
+}
+
 // Собирает финальный system-промпт шага из фиксированных блоков + творческой части от LLM.
 function assembleStepPrompt(params: {
   kind: StepKind;
@@ -310,43 +413,75 @@ function assembleStepPrompt(params: {
   branches?: { condition: string; targetProcessNumber: number }[];
   body: StepBody;
   fieldName: string;
+  slots?: string[]; // все слоты сценария — для [Копи в known]
 }): string {
-  const { kind, companyName, goal, style, scenarioGoals, nonGoals, required, maxAttempts, rules, branches, body, fieldName } = params;
+  const { kind, companyName, goal, style, required, rules, branches, body, fieldName, slots = [], nonGoals = [], scenarioGoals = [] } = params;
   const canExit = kind === "router" || kind === "routedStep";
+  // Чистое имя сущности берём от мета-промпта (existительное без глаголов); запасной вариант — грубый срез глагола из цели.
+  const entityDesc = (body.entity_name && body.entity_name.trim()) || goal.replace(/^(узнать|выяснить|уточнить|собрать)\s+/i, "").trim() || goal;
+  // Шаг-подтверждение: собирает не новую сущность, а сводку по known. Только для собирающих шагов.
+  const isConfirm = !canExit && kind !== "completion" && isConfirmationStep(goal, entityDesc);
+  // На шаге подтверждения [ВНЕ ЗАДАЧ/СТОП] остаётся (стоп/смена цели должны работать), но БЕЗ правила
+  // «да → прервать» — там «да» всегда значит «подтвердить заказ», иначе прямой конфликт.
+  const oos = uOutOfScope(nonGoals, !isConfirm);
   const parts: string[] = [];
 
-  parts.push(buildRoleBlock(companyName, goal, kind));
+  parts.push(uRole(companyName));
   parts.push(buildStyleBlock(style));
-  parts.push(SPEECH_RULES);
 
-  const guard = buildTopicGuardBlock(scenarioGoals, canExit, nonGoals);
-  if (guard.trim()) parts.push(guard.trim());
-
-  if (canExit && branches) parts.push(buildRoutingRules(branches));
-
-  if (kind === "collection" || kind === "routedStep") {
-    if (body.recognition && body.recognition.trim()) {
-      parts.push(`[Как распознавать ответ на этом шаге]\n${body.recognition.trim()}`);
-    }
-    parts.push(RECOGNITION_RULES);
+  // [ЦЕЛЬ ШАГА] — единственный кусок, что меняется от шага к шагу.
+  if (kind === "completion") {
+    parts.push(`ЦЕЛЬ ШАГА (завершение): ${goal || "тепло попрощаться и сообщить, что менеджер скоро свяжется"}. Одна короткая тёплая реплика.`);
+  } else if (canExit) {
+    // Пример-правило на роутере показываем как подсказку: помогает модели понять, что за
+    // сущность прячется за ветками (напр. «товар для авто — фара»). Берём сырой текст правила.
+    const hint = ruleExamples(rules);
+    parts.push([
+      `ЦЕЛЬ ШАГА (переходной/роутер): ${goal || "определить, в какую ветку вести диалог"}.`,
+      hint ? `Подсказка по вариантам: ${hint}` : "",
+    ].filter(Boolean).join("\n"));
+  } else if (isConfirm) {
+    // Никаких «Примеры значений» — они сбивают модель на «напишите да/подтверждаю».
+    parts.push(`ЦЕЛЬ ШАГА: показать клиенту сводку собранных данных и получить его подтверждение.`);
+  } else {
+    const ex = valueExamples(rules, body);
+    const valid = ruleValid(rules);
+    parts.push([
+      `ЦЕЛЬ ШАГА: выяснить сущность «${entityDesc}».`,
+      ex ? `Примеры значений: ${ex}.` : "",
+      valid ? `Правило значения: ${valid}` : "",
+    ].filter(Boolean).join("\n"));
   }
 
-  if (kind === "collection") {
-    parts.push(buildRefusalRules(required, maxAttempts));
-    parts.push(CONFIRMATION_RULES);
+  // Заметка по стилю шага (правило типа style). Оборачиваем оговоркой, чтобы одноразовые вещи
+  // («упомяни, что помощник») не повторялись в каждой реплике (частая проблема со словом «Всегда»).
+  const note = ruleStyle(rules);
+  if (note) parts.push(`[ЗАМЕТКА ПО СТИЛЮ ШАГА] ${note}\n(Применяй уместно по контексту, не вставляй в каждую реплику; одноразовое — представиться, поздороваться — только при greeted=false / в первом сообщении.)`);
+
+  parts.push(uEntities(slots));
+  parts.push(U_INPUT);
+  parts.push(uGoals(scenarioGoals)); // [ЦЕЛИ БОТА] — с чем реально помогает (пусто, если цели не заданы)
+  parts.push(oos); // [ВНЕ ЗАДАЧ / СТОП] — глобальный, перед логикой шага (пусто, если non-goals нет)
+
+  if (kind === "completion") {
+    // Завершающий шаг: действие уже в ЦЕЛИ, логики статусов/ветвления нет.
+  } else if (canExit) {
+    parts.push(uRouting(branches));
+    parts.push(U_SIDE);
+    parts.push(U_REPLY);
+  } else if (isConfirm) {
+    // U_REPLY тут НЕ добавляем — он запрещает называть чужие сущности, а сводке это нужно.
+    parts.push(uConfirm(fieldName));
+    parts.push(U_SIDE);
+  } else {
+    parts.push(uStatus(fieldName, entityDesc, required));
+    parts.push(U_SIDE);
+    parts.push(U_REPLY);
   }
 
-  const userRules = buildRulesBlock(rules);
-  if (userRules.trim()) parts.push(userRules.trim());
+  parts.push(uFormat(kind, !!oos && kind !== "completion"));
 
-  parts.push(FSM_RULES);
-
-  const examples = body.examples.map((ex) => `- ${renderExample(ex, kind, fieldName)}`).join("\n");
-  parts.push(`[Примеры «сообщение клиента → ответ»]\n${examples}`);
-
-  parts.push(buildFormatBlock(kind, fieldName));
-
-  return parts.join("\n\n");
+  return parts.filter(Boolean).join("\n\n");
 }
 
 // Мета-промпт, который просит LLM выдать ТОЛЬКО творческую часть шага структурированным JSON.
@@ -415,23 +550,18 @@ function buildBodyMetaPrompt(params: {
 }`;
   }
 
-  // collection
+  // collection — универсальный скелет: нужны ЧИСТАЯ сущность + КОНКРЕТНЫЕ значения.
   return `${common}
 
-Обычный шаг сбора данных. Цель: ${goal}
-Обязательный шаг: ${required}.
+Шаг СБОРА данных. Цель шага (как сформулировал пользователь): ${goal}
+Определи, какую ОДНУ сущность собирает этот шаг, и придумай примеры её значений.
 Верни JSON:
 {
-  "field_name": "короткое имя JSON-поля латиницей snake_case (например client_name, phone, car_model) под эти данные",
-  "recognition": "1-2 предложения: как извлекать суть именно этого типа данных из ответа клиента",
-  "examples": [
-    {"client": "клиент даёт данные", "data": "извлечённое значение", "bot_message": "живое короткое подтверждение/мостик дальше", "completed": true},
-    {"client": "встречный вопрос (зачем?)", "data": "", "bot_message": "коротко объяснить и вернуться к вопросу", "completed": false},
-    {"client": "не помню / тупик", "data": "", "bot_message": "переформулировать вопрос этого же шага другими словами", "completed": false},
-    {"client": "клиент В ОДНОМ сообщении даёт ответ на шаг И задаёт нецелевой вопрос (например «Денис, а есть вакансии?»)", "data": "извлечённое значение из этого же сообщения (например Денис)", "bot_message": "коротко отклонить нецелевое и подтвердить/двинуться дальше — НЕ переспрашивая уже данное", "completed": true}
-  ]
+  "entity_name": "ЧИСТОЕ имя сущности — короткое существительное/понятие, БЕЗ глаголов. Примеры преобразования: «узнать номер телефона» → «номер телефона»; «поздороваться и узнать цель» → «цель обращения»; «выяснить марку и модель авто» → «марка и модель авто»",
+  "field_name": "ключ этой сущности латиницей snake_case (client_name, phone, car_model, request_goal)",
+  "value_examples": ["2-3 КОНКРЕТНЫХ примера ЗНАЧЕНИЯ этой сущности — то, что реально мог бы сказать клиент. НЕ описание и НЕ пояснение, а именно значения. Напр. для телефона: «+375 29 111-22-33»; для авто: «Toyota Camry»; для цели: «сделать заказ», «консультация»"]
 }
-data — только извлечённое значение (не текст сообщения). Последний пример показывает, что нецелевой вопрос НЕ мешает засчитать данные, если клиент их дал в том же сообщении. Примеры — под тему этого бота и цель шага.`;
+value_examples — это САМИ значения строками, а не пояснения к ним. Под тему этого бренда и цель шага.`;
 }
 
 // Модель иногда игнорирует "верни только текст" и оборачивает ответ в markdown-код или
@@ -504,7 +634,9 @@ export class ProcessGenerator {
       lastRaw = await this.callLLMOnce(metaPrompt, errorLabel);
       try {
         const parsed = JSON.parse(lastRaw) as StepBody;
-        if (Array.isArray(parsed.examples) && parsed.examples.length >= 2) return parsed;
+        const okCollect = kind === "collection" && (parsed.entity_name?.trim() || (Array.isArray(parsed.value_examples) && parsed.value_examples.length >= 1));
+        const okOther = Array.isArray(parsed.examples) && parsed.examples.length >= 2;
+        if (okCollect || okOther) return parsed;
       } catch {
         // не JSON — пробуем ещё раз
       }
@@ -531,9 +663,10 @@ export class ProcessGenerator {
     style: ScenarioStyle,
     scenarioGoals: string[],
     cache?: GenerationCache,
-    nonGoals: string[] = []
+    nonGoals: string[] = [],
+    slots: string[] = []
   ): Promise<string> {
-    const key = fingerprint({ kind: "stepV2", companyName, step, isCompletion, style, scenarioGoals, nonGoals });
+    const key = fingerprint({ kind: "stepV2", engineVersion: ENGINE_VERSION, companyName, step, isCompletion, style, scenarioGoals, nonGoals, slots });
     const cached = cache?.get(key);
     if (cached) return cached;
 
@@ -556,6 +689,7 @@ export class ProcessGenerator {
       rules: step.rules,
       body,
       fieldName,
+      slots,
     });
     cache?.set(key, text);
     return text;
@@ -569,9 +703,10 @@ export class ProcessGenerator {
     style: ScenarioStyle,
     scenarioGoals: string[],
     cache?: GenerationCache,
-    nonGoals: string[] = []
+    nonGoals: string[] = [],
+    slots: string[] = []
   ): Promise<string> {
-    const key = fingerprint({ kind: "routerV2", companyName, branches, style, scenarioGoals, nonGoals });
+    const key = fingerprint({ kind: "routerV2", engineVersion: ENGINE_VERSION, companyName, branches, style, scenarioGoals, nonGoals, slots });
     const cached = cache?.get(key);
     if (cached) return cached;
 
@@ -592,6 +727,7 @@ export class ProcessGenerator {
       branches,
       body,
       fieldName: "value",
+      slots,
     });
     cache?.set(key, text);
     return text;
@@ -605,9 +741,10 @@ export class ProcessGenerator {
     style: ScenarioStyle,
     scenarioGoals: string[],
     cache?: GenerationCache,
-    nonGoals: string[] = []
+    nonGoals: string[] = [],
+    slots: string[] = []
   ): Promise<string> {
-    const key = fingerprint({ kind: "routedStepV2", companyName, step, branches, style, scenarioGoals, nonGoals });
+    const key = fingerprint({ kind: "routedStepV2", engineVersion: ENGINE_VERSION, companyName, step, branches, style, scenarioGoals, nonGoals, slots });
     const cached = cache?.get(key);
     if (cached) return cached;
 
@@ -629,6 +766,7 @@ export class ProcessGenerator {
       branches,
       body,
       fieldName: "value",
+      slots,
     });
     cache?.set(key, text);
     return text;
@@ -649,7 +787,7 @@ export class ProcessGenerator {
       maxAttempts: 1,
       rules: [
         {
-          type: "custom",
+          type: "style",
           text: "Ответ должен звучать тепло и без сожалений, как реальный человек: например «Похоже, пока не разобрались вместе — ничего страшного! Напишите, как только будете готовы, и мы продолжим». Не использовать канцелярские фразы вроде «к сожалению, не удалось определить ваш запрос».",
         },
       ],
@@ -668,12 +806,13 @@ export class ProcessGenerator {
     style: ScenarioStyle = DEFAULT_SCENARIO_STYLE,
     scenarioGoals: string[] = [],
     cache?: GenerationCache,
-    nonGoals: string[] = []
+    nonGoals: string[] = [],
+    slots: string[] = []
   ): Promise<GeneratedTask[]> {
     if (steps.length === 0) throw new Error("Нужен хотя бы один шаг");
 
     const [descriptions, fallback] = await Promise.all([
-      Promise.all(steps.map((step, i) => this.generateOne(companyName, step, i === steps.length - 1, style, scenarioGoals, cache, nonGoals))),
+      Promise.all(steps.map((step, i) => this.generateOne(companyName, step, i === steps.length - 1, style, scenarioGoals, cache, nonGoals, slots))),
       this.generateFallbackCompletion(companyName, scenarioGoals, cache),
     ]);
 
@@ -704,11 +843,12 @@ export class ProcessGenerator {
     style: ScenarioStyle = DEFAULT_SCENARIO_STYLE,
     scenarioGoals: string[] = [],
     cache?: GenerationCache,
-    nonGoals: string[] = []
+    nonGoals: string[] = [],
+    slots: string[] = []
   ): Promise<GeneratedTask[]> {
     if (steps.length === 0) {
       const [prompt, fallback] = await Promise.all([
-        this.generateRouter(companyName, branches, style, scenarioGoals, cache, nonGoals),
+        this.generateRouter(companyName, branches, style, scenarioGoals, cache, nonGoals, slots),
         this.generateFallbackCompletion(companyName, scenarioGoals, cache),
       ]);
       return [
@@ -721,8 +861,8 @@ export class ProcessGenerator {
     const last = steps[steps.length - 1]!;
 
     const [leadingDescriptions, routedDescription, fallback] = await Promise.all([
-      Promise.all(leading.map((step) => this.generateOne(companyName, step, false, style, scenarioGoals, cache, nonGoals))),
-      this.generateRoutedStep(companyName, last, branches, style, scenarioGoals, cache, nonGoals),
+      Promise.all(leading.map((step) => this.generateOne(companyName, step, false, style, scenarioGoals, cache, nonGoals, slots))),
+      this.generateRoutedStep(companyName, last, branches, style, scenarioGoals, cache, nonGoals, slots),
       this.generateFallbackCompletion(companyName, scenarioGoals, cache),
     ]);
 

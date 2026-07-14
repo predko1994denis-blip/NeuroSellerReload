@@ -16,9 +16,12 @@ import { MessageHandler } from "./MessageHandler";
 import { ReminderManager } from "./managers/ReminderManager";
 import { CRMManager } from "./managers/CRMManager";
 import { RagIngestionManager } from "./managers/RagIngestionManager";
+import { PdfVisionExtractor } from "./managers/PdfVisionExtractor";
+import { ImageStepReader } from "./managers/ImageStepReader";
 import { RagSearchManager } from "./managers/RagSearchManager";
 import { ProcessGenerator } from "./managers/ProcessGenerator";
 import { ScenarioRepository } from "./repositories/ScenarioRepository";
+import { MessageFeedbackRepository } from "./repositories/MessageFeedbackRepository";
 import { ClientRepository } from "./repositories/ClientRepository";
 import { TokenRepository } from "./repositories/TokenRepository";
 import { UserRepository } from "./repositories/UserRepository";
@@ -47,9 +50,12 @@ const embeddingClient = new EmbeddingClient(process.env.LLM_API_KEY!, process.en
 const reminderManager = new ReminderManager(reminderRepo, botReminderSettingRepo);
 const crmManager = new CRMManager(crmLeadRepo, crmSettingsRepo);
 const ragIngestionManager = new RagIngestionManager(ragDocumentRepo, ragChunkRepo, embeddingClient);
+const pdfVisionExtractor = new PdfVisionExtractor(process.env.LLM_API_KEY!, process.env.LLM_BASE_URL);
+const imageStepReader = new ImageStepReader(process.env.LLM_API_KEY!, process.env.LLM_BASE_URL);
 const ragSearchManager = new RagSearchManager(ragChunkRepo, embeddingClient);
 const processGenerator = new ProcessGenerator(process.env.LLM_API_KEY!, process.env.LLM_BASE_URL);
 const scenarioRepo = new ScenarioRepository();
+const messageFeedbackRepo = new MessageFeedbackRepository();
 
 const messageHandler = new MessageHandler(
   dialogRepo,
@@ -61,7 +67,8 @@ const messageHandler = new MessageHandler(
   responseParser,
   reminderManager,
   crmManager,
-  ragSearchManager
+  ragSearchManager,
+  imageStepReader
 );
 
 const reminderProcessor = new ReminderProcessor(
@@ -108,9 +115,13 @@ Bun.serve({
       processRepo,
       taskRepo,
       ragIngestionManager,
+      pdfVisionExtractor,
       ragDocumentRepo,
       processGenerator,
       scenarioRepo,
+      dialogRepo,
+      messageRepo,
+      messageFeedbackRepo,
     });
     if (adminResponse) return withCors(adminResponse);
 
