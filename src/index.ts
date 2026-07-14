@@ -28,6 +28,7 @@ import { UserRepository } from "./repositories/UserRepository";
 import { ReminderProcessor } from "./ReminderProcessor";
 import { handleTelegramWebhook } from "./routes/telegramWebhook";
 import { handleAdminApi } from "./routes/adminApi";
+import { TelegramUserAdapter } from "./channels/TelegramUserAdapter";
 
 const botRepo = new BotRepository();
 const processRepo = new ProcessRepository();
@@ -80,6 +81,33 @@ const reminderProcessor = new ReminderProcessor(
   reminderManager
 );
 reminderProcessor.start();
+
+// Тестовый канал: обычный (не-бот) Telegram-аккаунт через MTProto user-сессию. Активируется,
+// только если в .env заданы все три переменные — иначе просто не запускается, без ошибок.
+const userSession = process.env.TELEGRAM_USER_SESSION;
+const userApiId = process.env.TELEGRAM_API_ID;
+const userApiHash = process.env.TELEGRAM_API_HASH;
+const userBotId = process.env.TELEGRAM_USER_BOT_ID;
+if (userSession && userApiId && userApiHash && userBotId) {
+  const telegramUserAdapter = new TelegramUserAdapter(userSession, Number(userApiId), userApiHash);
+  const botIdNum = Number(userBotId);
+  telegramUserAdapter
+    .listen(async (chatId, text, image) => {
+      try {
+        const messages = await messageHandler.processMessage(botIdNum, chatId, text, image);
+        for (const msg of messages) {
+          await telegramUserAdapter.sendMessage(chatId, msg);
+        }
+      } catch (err) {
+        console.error("Ошибка обработки сообщения (Telegram user-аккаунт):", err);
+        await telegramUserAdapter
+          .sendMessage(chatId, "Сейчас небольшие технические неполадки — напишите, пожалуйста, чуть позже.")
+          .catch((sendErr) => console.error("Не удалось отправить сообщение об ошибке:", sendErr));
+      }
+    })
+    .then(() => console.log("Telegram user-аккаунт подключён как канал"))
+    .catch((err) => console.error("Не удалось подключить Telegram user-аккаунт:", err));
+}
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
