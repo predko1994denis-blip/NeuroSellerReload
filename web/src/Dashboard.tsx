@@ -187,7 +187,7 @@ function CreateCompanyModal({ onClose, onCreated }: { onClose: () => void; onCre
               value={companyName}
               onChange={(e) => setCompanyName(e.target.value)}
               required
-              placeholder="напр. Papl.by"
+              placeholder="напр. ООО «Ромашка»"
               className="mt-1 w-full border border-slate-300 rounded-lg px-4 py-2.5 text-slate-900 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100"
             />
           </label>
