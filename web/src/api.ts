@@ -28,6 +28,7 @@ function authHeaders(): Record<string, string> {
 export interface Company {
   id: number;
   email: string;
+  company_name: string;
   created_at: string;
 }
 
@@ -363,11 +364,11 @@ export interface RegisterClientResponse {
   token: string;
 }
 
-export async function registerClient(email: string, password: string): Promise<RegisterClientResponse> {
+export async function registerClient(email: string, password: string, companyName: string): Promise<RegisterClientResponse> {
   const res = await fetch(`${API_BASE_URL}/api/clients/register`, {
     method: "POST",
     headers: authHeaders(),
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, company_name: companyName }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

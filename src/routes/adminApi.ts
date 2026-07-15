@@ -298,14 +298,14 @@ async function registerClient(request: Request, deps: AdminApiDeps): Promise<Res
   const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
   requireAdmin(auth);
 
-  const body = (await request.json()) as { email?: string; password?: string };
+  const body = (await request.json()) as { email?: string; password?: string; company_name?: string };
   if (!body.email || !body.password) throw new Error("email и password обязательны");
 
   const existing = await deps.clientRepo.findByEmail(body.email);
   if (existing) throw new Error("Клиент с таким email уже существует");
 
   const passwordHash = await Bun.password.hash(body.password);
-  const client = await deps.clientRepo.create(body.email, passwordHash);
+  const client = await deps.clientRepo.create(body.email, passwordHash, body.company_name?.trim() ?? "");
 
   // Регистрация компании сразу создаёт её первого пользователя — менеджера с тем же логином
   const user = await deps.userRepo.create(body.email, passwordHash, "manager", client.id);
@@ -325,7 +325,7 @@ async function listClients(request: Request, deps: AdminApiDeps): Promise<Respon
       : [];
 
   // не отдаём password_hash наружу
-  const safe = clients.map((c) => ({ id: c!.id, email: c!.email, created_at: c!.created_at }));
+  const safe = clients.map((c) => ({ id: c!.id, email: c!.email, company_name: c!.company_name, created_at: c!.created_at }));
   return json(safe);
 }
 

@@ -4,6 +4,7 @@ CREATE TABLE clients (
   id SERIAL PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
+  company_name TEXT NOT NULL DEFAULT '', -- отображаемое имя на карточке; email — это логин, не для показа
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

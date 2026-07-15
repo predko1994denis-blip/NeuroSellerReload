@@ -2,10 +2,10 @@ import { sql } from "../db/connection";
 import type { Client } from "../entities/Client";
 
 export class ClientRepository {
-  async create(email: string, passwordHash: string): Promise<Client> {
+  async create(email: string, passwordHash: string, companyName: string): Promise<Client> {
     const [row] = await sql<Client[]>`
-      INSERT INTO clients (email, password_hash)
-      VALUES (${email}, ${passwordHash})
+      INSERT INTO clients (email, password_hash, company_name)
+      VALUES (${email}, ${passwordHash}, ${companyName})
       RETURNING *
     `;
     return row!;

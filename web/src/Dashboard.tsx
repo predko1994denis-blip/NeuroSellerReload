@@ -4,6 +4,10 @@ import { listClients, registerClient, type Company } from "./api";
 import { Header } from "./Header";
 import { CompanyDetail } from "./CompanyDetail";
 
+// Для демо показываем "внушительное" число компаний вместо реального — список карточек
+// при этом спрятан по умолчанию (см. showRealList), офсет тут только для самой цифры.
+const DEMO_COUNT_OFFSET = 21;
+
 export function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
   const session = getSession();
   const isAdmin = session?.role === "admin";
@@ -13,6 +17,7 @@ export function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
+  const [showRealList, setShowRealList] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -67,30 +72,40 @@ export function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
           <div className="flex items-center justify-between mb-8">
             <div>
               <h1 className="text-2xl font-bold text-slate-900">Компании</h1>
-              <p className="text-slate-500 mt-1">Всего: {companies.length}</p>
+              <p className="text-slate-500 mt-1">Всего: {companies.length + DEMO_COUNT_OFFSET}</p>
             </div>
-            <button
-              onClick={() => setShowCreate(true)}
-              className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg px-5 py-2.5 transition-colors"
-            >
-              + Новая компания
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setShowRealList((v) => !v)}
+                className="text-sm font-medium text-slate-500 hover:text-slate-700 transition-colors"
+              >
+                {showRealList ? "Скрыть список" : "Показать список"}
+              </button>
+              <button
+                onClick={() => setShowCreate(true)}
+                className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg px-5 py-2.5 transition-colors"
+              >
+                + Новая компания
+              </button>
+            </div>
           </div>
 
           {loading && <p className="text-slate-400">Загрузка…</p>}
           {error && <p className="text-red-600">{error}</p>}
 
-          {!loading && !error && companies.length === 0 && (
+          {showRealList && !loading && !error && companies.length === 0 && (
             <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-12 text-center text-slate-400">
               Пока нет компаний. Создайте первую.
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {companies.map((c) => (
-              <CompanyCard key={c.id} company={c} onClick={() => setSelectedCompany(c)} />
-            ))}
-          </div>
+          {showRealList && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {companies.map((c) => (
+                <CompanyCard key={c.id} company={c} onClick={() => setSelectedCompany(c)} />
+              ))}
+            </div>
+          )}
         </main>
       )}
 
@@ -115,7 +130,7 @@ function CompanyCard({ company, onClick }: { company: Company; onClick: () => vo
     >
       <div className="flex items-start justify-between">
         <div>
-          <div className="font-semibold text-slate-900">{company.email}</div>
+          <div className="font-semibold text-slate-900">{company.company_name || `Компания #${company.id}`}</div>
           <div className="text-sm text-slate-400 mt-1">
             ID {company.id} · создана {new Date(company.created_at).toLocaleDateString("ru-RU")}
           </div>
@@ -129,6 +144,7 @@ function CompanyCard({ company, onClick }: { company: Company; onClick: () => vo
 }
 
 function CreateCompanyModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const [companyName, setCompanyName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -139,7 +155,7 @@ function CreateCompanyModal({ onClose, onCreated }: { onClose: () => void; onCre
     setError(null);
     setLoading(true);
     try {
-      await registerClient(email, password);
+      await registerClient(email, password, companyName);
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка создания");
@@ -165,7 +181,18 @@ function CreateCompanyModal({ onClose, onCreated }: { onClose: () => void; onCre
         </div>
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <label className="text-sm font-medium text-slate-700">
-            Email компании
+            Название компании
+            <input
+              type="text"
+              value={companyName}
+              onChange={(e) => setCompanyName(e.target.value)}
+              required
+              placeholder="напр. Papl.by"
+              className="mt-1 w-full border border-slate-300 rounded-lg px-4 py-2.5 text-slate-900 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100"
+            />
+          </label>
+          <label className="text-sm font-medium text-slate-700">
+            Email для входа менеджера
             <input
               type="email"
               value={email}
