@@ -77,6 +77,8 @@ const reminderProcessor = new ReminderProcessor(
   dialogRepo,
   botRepo,
   messageRepo,
+  processRepo,
+  taskRepo,
   llmRequester,
   reminderManager
 );
