@@ -2,6 +2,7 @@ import { useState } from "react";
 import { login } from "./api";
 import { saveSession } from "./auth";
 import { Header } from "./Header";
+import { PasswordInput } from "./PasswordInput";
 
 export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
   const [loginValue, setLoginValue] = useState("");
@@ -40,13 +41,12 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
             autoComplete="username"
             className="border border-slate-300 rounded-lg px-4 py-2.5 text-slate-900 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100"
           />
-          <input
+          <PasswordInput
             placeholder="Пароль"
-            type="password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={setPassword}
             autoComplete="current-password"
-            className="border border-slate-300 rounded-lg px-4 py-2.5 text-slate-900 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100"
+            className="w-full border border-slate-300 rounded-lg px-4 py-2.5 text-slate-900 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100"
           />
           {error && <div className="text-red-600 text-sm">{error}</div>}
           <button

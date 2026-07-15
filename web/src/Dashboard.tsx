@@ -3,6 +3,7 @@ import { clearSession, getSession } from "./auth";
 import { listClients, registerClient, type Company } from "./api";
 import { Header } from "./Header";
 import { CompanyDetail } from "./CompanyDetail";
+import { PasswordInput } from "./PasswordInput";
 
 // Для демо показываем "внушительное" число компаний вместо реального — список карточек
 // при этом спрятан по умолчанию (см. showRealList), офсет тут только для самой цифры.
@@ -204,10 +205,9 @@ function CreateCompanyModal({ onClose, onCreated }: { onClose: () => void; onCre
           </label>
           <label className="text-sm font-medium text-slate-700">
             Пароль для входа менеджера
-            <input
-              type="password"
+            <PasswordInput
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={setPassword}
               required
               placeholder="••••••••"
               className="mt-1 w-full border border-slate-300 rounded-lg px-4 py-2.5 text-slate-900 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100"
