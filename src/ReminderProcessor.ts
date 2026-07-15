@@ -73,7 +73,9 @@ export class ReminderProcessor {
   }
 
   private async tick(): Promise<void> {
-    const due = await this.reminderRepo.findDue(new Date());
+    // claimDue атомарно захватывает созревшие напоминания (см. репозиторий): даже если во время
+    // деплоя параллельно работают два контейнера, одно напоминание достанется только одному из них.
+    const due = await this.reminderRepo.claimDue(new Date());
 
     for (const reminder of due) {
       const dialog = await this.dialogRepo.findById(reminder.dialog_id);

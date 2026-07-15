@@ -21,9 +21,20 @@ export class ReminderRepository {
     await sql`DELETE FROM reminders WHERE id = ${id}`;
   }
 
-  async findDue(now: Date): Promise<Reminder[]> {
+  // Атомарно "захватывает" все созревшие напоминания: одним запросом отбирает их с блокировкой строк
+  // (FOR UPDATE SKIP LOCKED — параллельный процесс эти же строки пропустит, а не продублирует) и тут же
+  // отодвигает next_fire_at на час вперёд как метку "взято в обработку". Так во время деплоя, когда
+  // Railway короткое время держит старый и новый контейнер разом, одно напоминание не уйдёт клиенту
+  // дважды. Реальный next_fire_at (или удаление) проставит advance() после обработки; если процесс
+  // упадёт на середине — напоминание не потеряется, а повторится через час (безопасный запас).
+  async claimDue(now: Date): Promise<Reminder[]> {
     return sql<Reminder[]>`
-      SELECT * FROM reminders WHERE next_fire_at <= ${now}
+      UPDATE reminders SET next_fire_at = ${now}::timestamptz + interval '1 hour'
+      WHERE id IN (
+        SELECT id FROM reminders WHERE next_fire_at <= ${now}
+        FOR UPDATE SKIP LOCKED
+      )
+      RETURNING *
     `;
   }
 }
