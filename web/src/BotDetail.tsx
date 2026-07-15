@@ -10,10 +10,13 @@ import {
   updateBotRagEnabled,
   listFeedback,
   setFeedbackResolved,
+  getReminderSettings,
+  updateReminderSettings,
   type Bot,
   type Scenario,
   type RagDocument,
   type FeedbackItem,
+  type ReminderStep,
 } from "./api";
 import { ChainBuilder } from "./ChainBuilder";
 import { ScenarioPromptsView } from "./ScenarioPromptsView";
@@ -178,7 +181,117 @@ export function BotDetail({ bot, onBack }: { bot: Bot; onBack: () => void }) {
       )}
 
       <RagDocumentsSection botId={bot.id} initialRagEnabled={bot.rag_enabled} />
+
+      <ReminderSettingsSection botId={bot.id} />
     </main>
+  );
+}
+
+function ReminderSettingsSection({ botId }: { botId: number }) {
+  const [steps, setSteps] = useState<{ delay_minutes: number }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const loaded: ReminderStep[] = await getReminderSettings(botId);
+        setSteps(loaded.map((s) => ({ delay_minutes: s.delay_minutes })));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Ошибка загрузки");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [botId]);
+
+  function updateDelay(i: number, minutes: number) {
+    setSteps(steps.map((s, idx) => (idx === i ? { delay_minutes: minutes } : s)));
+    setSaved(false);
+  }
+
+  function addStep() {
+    setSteps([...steps, { delay_minutes: 10 }]);
+    setSaved(false);
+  }
+
+  function removeStep(i: number) {
+    setSteps(steps.filter((_, idx) => idx !== i));
+    setSaved(false);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      await updateReminderSettings(botId, steps);
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Не удалось сохранить");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mt-8 bg-white rounded-2xl border border-slate-200 p-6">
+      <h2 className="text-lg font-bold text-slate-900 mb-1">⏰ Follow-up напоминания</h2>
+      <p className="text-sm text-slate-500 mb-4">
+        Если клиент не отвечает — бот сам решает по контексту, уместно ли напомнить о себе (не будет
+        писать, если клиент попросил не беспокоить или разговор явно закончен).
+      </p>
+
+      {loading && <p className="text-slate-400 text-sm">Загрузка…</p>}
+      {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
+
+      {!loading && (
+        <>
+          <div className="flex flex-col gap-2 mb-4">
+            {steps.length === 0 && (
+              <p className="text-sm text-slate-400">Напоминания не настроены — шаг «Добавить», чтобы задать первое.</p>
+            )}
+            {steps.map((s, i) => (
+              <div key={i} className="flex items-center gap-2 text-sm">
+                <span className="text-slate-500 w-16">Шаг {i + 1}:</span>
+                <span className="text-slate-500">через</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={s.delay_minutes}
+                  onChange={(e) => updateDelay(i, Number(e.target.value))}
+                  className="w-20 border border-slate-300 rounded-lg px-2 py-1 outline-none focus:border-red-500"
+                />
+                <span className="text-slate-500">мин после последнего сообщения бота</span>
+                <button onClick={() => removeStep(i)} className="text-slate-400 hover:text-red-600 ml-2">
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={addStep}
+              className="border border-slate-300 text-slate-700 text-sm font-medium rounded-lg px-3 py-1.5 hover:bg-slate-50"
+            >
+              + Добавить шаг
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg px-4 py-1.5"
+            >
+              {saving ? "Сохраняем…" : "Сохранить"}
+            </button>
+            {saved && <span className="text-emerald-600 text-sm">Сохранено ✓</span>}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

@@ -12,6 +12,7 @@ import type { ScenarioRepository } from "../repositories/ScenarioRepository";
 import type { DialogRepository } from "../repositories/DialogRepository";
 import type { MessageRepository } from "../repositories/MessageRepository";
 import type { MessageFeedbackRepository } from "../repositories/MessageFeedbackRepository";
+import type { BotReminderSettingRepository } from "../repositories/BotReminderSettingRepository";
 import { authenticate, scopeClientId, requireAdmin, AuthError } from "../auth";
 import { setTelegramWebhook, TelegramAdapter } from "../channels/TelegramAdapter";
 import { extractTextFromPdf } from "../managers/PdfTextExtractor";
@@ -34,6 +35,7 @@ export interface AdminApiDeps {
   dialogRepo: DialogRepository;
   messageRepo: MessageRepository;
   messageFeedbackRepo: MessageFeedbackRepository;
+  botReminderSettingRepo: BotReminderSettingRepository;
 }
 
 interface ScenarioProcessInput {
@@ -178,6 +180,14 @@ export async function handleAdminApi(request: Request, deps: AdminApiDeps): Prom
     if (pathname.startsWith("/api/bots/") && pathname.endsWith("/rag-enabled") && request.method === "PATCH") {
       const id = Number(pathname.split("/")[3]);
       return await updateBotRagEnabled(id, request, deps);
+    }
+    if (pathname.match(/^\/api\/bots\/\d+\/reminder-settings$/) && request.method === "GET") {
+      const id = Number(pathname.split("/")[3]);
+      return await listReminderSettings(id, request, deps);
+    }
+    if (pathname.match(/^\/api\/bots\/\d+\/reminder-settings$/) && request.method === "PUT") {
+      const id = Number(pathname.split("/")[3]);
+      return await updateReminderSettings(id, request, deps);
     }
     if (pathname === "/api/processes/create" && request.method === "POST") {
       return await createProcess(request, deps);
@@ -403,6 +413,29 @@ async function updateBotRagEnabled(id: number, request: Request, deps: AdminApiD
 
   const bot = await deps.botRepo.updateRagEnabled(id, body.rag_enabled);
   return json({ id: bot.id, rag_enabled: bot.rag_enabled });
+}
+
+async function listReminderSettings(botId: number, request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  await assertBotAccess(deps, botId, auth);
+
+  const steps = await deps.botReminderSettingRepo.findByBotId(botId);
+  return json(steps.map((s) => ({ step_order: s.step_order, delay_minutes: s.delay_minutes })));
+}
+
+async function updateReminderSettings(botId: number, request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  await assertBotAccess(deps, botId, auth);
+
+  const body = (await request.json()) as { steps?: { delay_minutes?: number }[] };
+  if (!Array.isArray(body.steps)) throw new Error("steps (массив) обязателен");
+  for (const s of body.steps) {
+    if (!s.delay_minutes || s.delay_minutes <= 0) throw new Error("У каждого шага delay_minutes должен быть > 0");
+  }
+
+  const steps = body.steps.map((s, i) => ({ stepOrder: i + 1, delayMinutes: s.delay_minutes! }));
+  const saved = await deps.botReminderSettingRepo.replaceForBot(botId, steps);
+  return json(saved.map((s) => ({ step_order: s.step_order, delay_minutes: s.delay_minutes })));
 }
 
 async function createProcess(request: Request, deps: AdminApiDeps): Promise<Response> {

@@ -150,6 +150,7 @@ Bun.serve({
       dialogRepo,
       messageRepo,
       messageFeedbackRepo,
+      botReminderSettingRepo,
     });
     if (adminResponse) return withCors(adminResponse);
 

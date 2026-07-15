@@ -82,6 +82,27 @@ export interface CreateBotResponse {
   webhook_set: boolean;
 }
 
+export interface ReminderStep {
+  step_order: number;
+  delay_minutes: number;
+}
+
+export async function getReminderSettings(botId: number): Promise<ReminderStep[]> {
+  const res = await fetch(`${API_BASE_URL}/api/bots/${botId}/reminder-settings`, { headers: authHeaders() });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Не удалось загрузить напоминания");
+  return res.json();
+}
+
+export async function updateReminderSettings(botId: number, steps: { delay_minutes: number }[]): Promise<ReminderStep[]> {
+  const res = await fetch(`${API_BASE_URL}/api/bots/${botId}/reminder-settings`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify({ steps }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Не удалось сохранить напоминания");
+  return res.json();
+}
+
 export async function createBot(
   telegramToken: string,
   clientId: number,
