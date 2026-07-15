@@ -26,6 +26,10 @@ const REMINDER_SYSTEM_PROMPT = `Ты — менеджер по продажам.
 
 export class ReminderProcessor {
   private timer: ReturnType<typeof setInterval> | null = null;
+  // Обработка одного напоминания (LLM-вызов + отправка) может занять дольше CHECK_INTERVAL_MS —
+  // без этого флага следующий тик подхватит то же самое ещё не обновлённое напоминание и
+  // отправит его повторно (дубли клиенту). Гарантируем, что тики не выполняются параллельно.
+  private running = false;
 
   constructor(
     private reminderRepo: ReminderRepository,
@@ -38,7 +42,11 @@ export class ReminderProcessor {
 
   start(): void {
     this.timer = setInterval(() => {
-      this.tick().catch((err) => console.error("ReminderProcessor tick failed:", err));
+      if (this.running) return;
+      this.running = true;
+      this.tick()
+        .catch((err) => console.error("ReminderProcessor tick failed:", err))
+        .finally(() => { this.running = false; });
     }, CHECK_INTERVAL_MS);
   }
 
