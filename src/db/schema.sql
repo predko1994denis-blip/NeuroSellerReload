@@ -139,6 +139,7 @@ CREATE TABLE crm_leads (
   phone TEXT,
   information JSONB NOT NULL DEFAULT '{}', -- прочие кастомные поля из ответов LLM
   processed BOOLEAN NOT NULL DEFAULT false,
+  is_order BOOLEAN NOT NULL DEFAULT false, -- true только если диалог дошёл до НАСТОЯЩЕГО completion (не fallback после исчерпанных попыток) — см. MessageHandler.applyTransition
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

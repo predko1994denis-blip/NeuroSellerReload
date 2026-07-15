@@ -483,6 +483,9 @@ ${ragContext}`;
         is_active: false,
         greeted: parsed.greeted ?? dialog.greeted,
       });
+      // is_fallback=true — это "не разобрались, менеджер свяжется", НЕ настоящий заказ.
+      // is_fallback=false — все параметры собраны штатно, это и есть заказ.
+      await this.crmManager.markCompletion(dialog.id, !task.is_fallback);
       return { dialog: updated, taskChanged: false };
     }
 

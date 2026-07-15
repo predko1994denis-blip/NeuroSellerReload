@@ -488,3 +488,22 @@ export async function setFeedbackResolved(feedbackId: number, resolved: boolean)
   });
   if (!res.ok) throw new Error("Не удалось обновить статус");
 }
+
+export interface Order {
+  id: number;
+  dialog_id: number;
+  bot_id: number;
+  chat_id: string;
+  name: string | null;
+  phone: string | null;
+  information: Record<string, unknown>;
+  processed: boolean;
+  is_order: boolean;
+  created_at: string;
+}
+
+export async function listOrders(botId: number): Promise<Order[]> {
+  const res = await fetch(`${API_BASE_URL}/api/orders?bot_id=${botId}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error("Не удалось загрузить заказы");
+  return res.json();
+}

@@ -153,6 +153,7 @@ Bun.serve({
       messageRepo,
       messageFeedbackRepo,
       botReminderSettingRepo,
+      crmLeadRepo,
     });
     if (adminResponse) return withCors(adminResponse);
 

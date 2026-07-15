@@ -1,5 +1,5 @@
 import { sql } from "../db/connection";
-import type { CrmLead } from "../entities/Crm";
+import type { CrmLead, Order } from "../entities/Crm";
 
 export class CrmLeadRepository {
   // Накопительный upsert: новые поля (name/phone/information) дополняют то, что уже собрано,
@@ -29,5 +29,23 @@ export class CrmLeadRepository {
 
   async markProcessed(id: number): Promise<void> {
     await sql`UPDATE crm_leads SET processed = true WHERE id = ${id}`;
+  }
+
+  // Вызывается ровно в момент, когда MessageHandler решает, что диалог завершён (is_active=false) —
+  // isOrder=true только для настоящего completion, false для fallback/abort (см. вызов в MessageHandler).
+  // Молча ничего не делает, если у диалога вообще не было накоплено ни одного лид-поля (нет строки).
+  async markOrderStatus(dialogId: number, isOrder: boolean): Promise<void> {
+    await sql`UPDATE crm_leads SET is_order = ${isOrder} WHERE dialog_id = ${dialogId}`;
+  }
+
+  // Заказы бота — только успешно завершённые лиды, вместе с bot_id/chat_id диалога (для UI/скоупа).
+  async listOrdersByBotId(botId: number): Promise<Order[]> {
+    return sql<Order[]>`
+      SELECT l.*, d.bot_id, d.chat_id
+      FROM crm_leads l
+      INNER JOIN dialogs d ON d.id = l.dialog_id
+      WHERE d.bot_id = ${botId} AND l.is_order = true
+      ORDER BY l.created_at DESC
+    `;
   }
 }

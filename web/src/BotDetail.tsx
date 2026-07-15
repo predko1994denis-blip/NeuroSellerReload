@@ -12,11 +12,13 @@ import {
   setFeedbackResolved,
   getReminderSettings,
   updateReminderSettings,
+  listOrders,
   type Bot,
   type Scenario,
   type RagDocument,
   type FeedbackItem,
   type ReminderStep,
+  type Order,
 } from "./api";
 import { ChainBuilder } from "./ChainBuilder";
 import { ScenarioPromptsView } from "./ScenarioPromptsView";
@@ -34,6 +36,7 @@ export function BotDetail({ bot, onBack }: { bot: Bot; onBack: () => void }) {
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [companyName, setCompanyName] = useState(bot.company_name);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [showOrders, setShowOrders] = useState(false);
   const [unresolvedCount, setUnresolvedCount] = useState<number | null>(null);
 
   async function loadFeedbackCount() {
@@ -95,27 +98,35 @@ export function BotDetail({ bot, onBack }: { bot: Bot; onBack: () => void }) {
           <h1 className="text-2xl font-bold text-slate-900">🤖 Бот #{bot.id}</h1>
           <p className="text-slate-500 mt-1">Сценарии · всего {scenarios.length}</p>
         </div>
-        {isAdmin && (
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setShowFeedback(true)}
-              className="relative border border-slate-300 text-slate-700 font-medium rounded-lg px-4 py-2.5 hover:bg-slate-50 transition-colors"
-            >
-              📝 Пометки менеджера
-              {!!unresolvedCount && (
-                <span className="absolute -top-2 -right-2 bg-amber-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                  {unresolvedCount}
-                </span>
-              )}
-            </button>
-            <button
-              onClick={() => setShowGenerate(true)}
-              className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg px-5 py-2.5 transition-colors"
-            >
-              ✨ Сгенерировать цепочку
-            </button>
-          </div>
-        )}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowOrders(true)}
+            className="border border-slate-300 text-slate-700 font-medium rounded-lg px-4 py-2.5 hover:bg-slate-50 transition-colors"
+          >
+            📦 Заказы
+          </button>
+          {isAdmin && (
+            <>
+              <button
+                onClick={() => setShowFeedback(true)}
+                className="relative border border-slate-300 text-slate-700 font-medium rounded-lg px-4 py-2.5 hover:bg-slate-50 transition-colors"
+              >
+                📝 Пометки менеджера
+                {!!unresolvedCount && (
+                  <span className="absolute -top-2 -right-2 bg-amber-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                    {unresolvedCount}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={() => setShowGenerate(true)}
+                className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg px-5 py-2.5 transition-colors"
+              >
+                ✨ Сгенерировать цепочку
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       <CompanyNameField botId={bot.id} companyName={companyName} onSaved={setCompanyName} />
@@ -179,6 +190,8 @@ export function BotDetail({ bot, onBack }: { bot: Bot; onBack: () => void }) {
           onChanged={loadFeedbackCount}
         />
       )}
+
+      {showOrders && <OrdersPanel botId={bot.id} onClose={() => setShowOrders(false)} />}
 
       <RagDocumentsSection botId={bot.id} initialRagEnabled={bot.rag_enabled} />
 
@@ -403,6 +416,85 @@ function FeedbackPanel({ botId, onClose, onChanged }: { botId: number; onClose: 
                   >
                     {f.resolved ? "↺ вернуть в работу" : "✓ разобрано"}
                   </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OrdersPanel({ botId, onClose }: { botId: number; onClose: () => void }) {
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        setOrders(await listOrders(botId));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Ошибка загрузки");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [botId]);
+
+  function formatFieldName(key: string): string {
+    return key.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center px-4 z-50" onClick={onClose}>
+      <div
+        className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-2xl max-h-[85vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">📦 Заказы</h2>
+            <p className="text-xs text-slate-400 mt-0.5">Диалоги с полностью собранными данными</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">
+            ×
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {loading && <p className="text-slate-400 text-sm">Загрузка…</p>}
+          {error && <p className="text-red-600 text-sm">{error}</p>}
+
+          {!loading && !error && orders.length === 0 && (
+            <div className="text-center text-slate-400 py-10">Пока нет заказов.</div>
+          )}
+
+          <div className="flex flex-col gap-3">
+            {orders.map((o) => (
+              <div key={o.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-col gap-1 text-sm">
+                  {o.name && (
+                    <div>
+                      <span className="font-medium text-slate-700">Имя:</span> {o.name}
+                    </div>
+                  )}
+                  {o.phone && (
+                    <div>
+                      <span className="font-medium text-slate-700">Телефон:</span> {o.phone}
+                    </div>
+                  )}
+                  {Object.entries(o.information).map(([key, value]) => (
+                    <div key={key}>
+                      <span className="font-medium text-slate-700">{formatFieldName(key)}:</span> {String(value)}
+                    </div>
+                  ))}
+                </div>
+                <div className="text-[11px] text-slate-400 mt-3">
+                  {new Date(o.created_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
                 </div>
               </div>
             ))}

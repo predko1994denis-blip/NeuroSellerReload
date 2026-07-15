@@ -13,6 +13,7 @@ import type { DialogRepository } from "../repositories/DialogRepository";
 import type { MessageRepository } from "../repositories/MessageRepository";
 import type { MessageFeedbackRepository } from "../repositories/MessageFeedbackRepository";
 import type { BotReminderSettingRepository } from "../repositories/BotReminderSettingRepository";
+import type { CrmLeadRepository } from "../repositories/CrmLeadRepository";
 import { authenticate, scopeClientId, requireAdmin, AuthError } from "../auth";
 import { setTelegramWebhook, TelegramAdapter } from "../channels/TelegramAdapter";
 import { extractTextFromPdf } from "../managers/PdfTextExtractor";
@@ -36,6 +37,7 @@ export interface AdminApiDeps {
   messageRepo: MessageRepository;
   messageFeedbackRepo: MessageFeedbackRepository;
   botReminderSettingRepo: BotReminderSettingRepository;
+  crmLeadRepo: CrmLeadRepository;
 }
 
 interface ScenarioProcessInput {
@@ -242,6 +244,9 @@ export async function handleAdminApi(request: Request, deps: AdminApiDeps): Prom
     }
     if (pathname === "/api/dialogs" && request.method === "GET") {
       return await listDialogs(request, deps);
+    }
+    if (pathname === "/api/orders" && request.method === "GET") {
+      return await listOrders(request, deps);
     }
     if (pathname.match(/^\/api\/dialogs\/\d+\/messages$/) && request.method === "GET") {
       const id = Number(pathname.split("/")[3]);
@@ -827,6 +832,19 @@ async function listDialogs(request: Request, deps: AdminApiDeps): Promise<Respon
   await assertBotAccess(deps, botId, auth);
   const dialogs = await deps.dialogRepo.findByBotId(botId);
   return json(dialogs);
+}
+
+// GET /api/orders?bot_id= — заказы (лиды с полностью собранными данными), доступно и
+// настройщику, и менеджеру этой компании (та же проверка доступа, что и у диалогов).
+async function listOrders(request: Request, deps: AdminApiDeps): Promise<Response> {
+  const auth = await authenticate(request, deps.tokenRepo, deps.userRepo);
+  const url = new URL(request.url);
+  const botId = Number(url.searchParams.get("bot_id"));
+  if (!botId) throw new Error("bot_id обязателен");
+
+  await assertBotAccess(deps, botId, auth);
+  const orders = await deps.crmLeadRepo.listOrdersByBotId(botId);
+  return json(orders);
 }
 
 // GET /api/dialogs/:id/messages — сообщения диалога + пометки менеджера.

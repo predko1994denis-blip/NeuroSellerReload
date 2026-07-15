@@ -18,6 +18,12 @@ export class CRMManager {
     await this.crmLeadRepo.upsert(dialogId, { name, phone, information: rest });
   }
 
+  // Вызывается ровно в момент завершения диалога (см. MessageHandler.applyTransition) —
+  // фиксирует, был ли это настоящий заказ (все параметры собраны) или обрыв/fallback.
+  async markCompletion(dialogId: number, isOrder: boolean): Promise<void> {
+    await this.crmLeadRepo.markOrderStatus(dialogId, isOrder);
+  }
+
   // Вызывается, когда диалог завершён (is_active=false) — финальный экспорт в AmoCRM
   async sendToAmoCrm(dialogId: number, botId: number): Promise<void> {
     const lead = await this.crmLeadRepo.findByDialogId(dialogId);
