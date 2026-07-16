@@ -5,10 +5,6 @@ import { Header } from "./Header";
 import { CompanyDetail } from "./CompanyDetail";
 import { PasswordInput } from "./PasswordInput";
 
-// Для демо показываем "внушительное" число компаний вместо реального — список карточек
-// при этом спрятан по умолчанию (см. showRealList), офсет тут только для самой цифры.
-const DEMO_COUNT_OFFSET = 21;
-
 export function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
   const session = getSession();
   const isAdmin = session?.role === "admin";
@@ -18,7 +14,6 @@ export function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
-  const [showRealList, setShowRealList] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -73,15 +68,9 @@ export function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
           <div className="flex items-center justify-between mb-8">
             <div>
               <h1 className="text-2xl font-bold text-slate-900">Компании</h1>
-              <p className="text-slate-500 mt-1">Всего: {companies.length + DEMO_COUNT_OFFSET}</p>
+              <p className="text-slate-500 mt-1">Всего: {companies.length}</p>
             </div>
             <div className="flex items-center gap-3">
-              <button
-                onClick={() => setShowRealList((v) => !v)}
-                className="text-sm font-medium text-slate-500 hover:text-slate-700 transition-colors"
-              >
-                {showRealList ? "Скрыть список" : "Показать список"}
-              </button>
               <button
                 onClick={() => setShowCreate(true)}
                 className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg px-5 py-2.5 transition-colors"
@@ -94,19 +83,17 @@ export function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
           {loading && <p className="text-slate-400">Загрузка…</p>}
           {error && <p className="text-red-600">{error}</p>}
 
-          {showRealList && !loading && !error && companies.length === 0 && (
+          {!loading && !error && companies.length === 0 && (
             <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-12 text-center text-slate-400">
               Пока нет компаний. Создайте первую.
             </div>
           )}
 
-          {showRealList && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {companies.map((c) => (
-                <CompanyCard key={c.id} company={c} onClick={() => setSelectedCompany(c)} />
-              ))}
-            </div>
-          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {companies.map((c) => (
+              <CompanyCard key={c.id} company={c} onClick={() => setSelectedCompany(c)} />
+            ))}
+          </div>
         </main>
       )}
 
@@ -132,9 +119,6 @@ function CompanyCard({ company, onClick }: { company: Company; onClick: () => vo
       <div className="flex items-start justify-between">
         <div>
           <div className="font-semibold text-slate-900">{company.company_name || `Компания #${company.id}`}</div>
-          <div className="text-sm text-slate-400 mt-1">
-            ID {company.id} · создана {new Date(company.created_at).toLocaleDateString("ru-RU")}
-          </div>
         </div>
         <span className="text-xs font-medium text-slate-400 bg-slate-100 rounded-full px-2.5 py-1">
           0 ботов
