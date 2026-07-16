@@ -100,7 +100,9 @@ export class MessageHandler {
     const historyItems = history.map((m) => ({ role: m.role, content: m.content ?? "" }));
 
     // ── ОТДЕЛ 1: «Справочная» ── отдельным фокусным вызовом отвечает на вопрос по базе (или "").
-    const ragAnswer = await this.answerFromRag(botId, text, task.model, historyItems);
+    // Пропускаем, если у текущего шага включён rag_enabled — он сам сверяется с базой в своём
+    // промпте, и параллельный вызов «Справочной» по той же базе даёт задвоенный уточняющий вопрос.
+    const ragAnswer = task.rag_enabled ? "" : await this.answerFromRag(botId, text, task.model, historyItems);
 
     // Прошлый ход мог быть [ВНЕ ЗАДАЧ]-отказом с вопросом «помочь с другим или прервать?» —
     // такой обмен не попадает в history, поэтому короткое "да"/"нет" клиента передаём через
