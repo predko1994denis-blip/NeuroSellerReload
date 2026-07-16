@@ -114,7 +114,7 @@ export class MessageHandler {
 
     // ── ОТДЕЛ 2: «Менеджер» ── ведёт свою задачу сценария (без RAG-логики, только known).
     let parsed = await this.requestParsed(
-      this.buildSystemPrompt(task),
+      await this.buildSystemPrompt(task, botId, text),
       {
         latest_user_message: text,
         greeted: greetedForThisRequest,
@@ -177,7 +177,7 @@ export class MessageHandler {
       task = await this.loadTask(dialog);
       const followHistory = await this.messageRepo.findByDialogId(dialog.id);
 
-      const followSystemPrompt = this.buildSystemPrompt(task);
+      const followSystemPrompt = await this.buildSystemPrompt(task, botId, text);
 
       // Ответ предыдущего шага ещё НЕ записан в БД (сохраняется один раз после цикла). Без него
       // follow-up шаг не видит, что имя уже обработано, и «начинает заново» — здоровается и
@@ -243,10 +243,22 @@ export class MessageHandler {
     return this.dialogRepo.create(botId, chatId, firstProcess.process_number, firstTask.task_number);
   }
 
-  // Промпт шага сценария — ТОЛЬКО его задача (RAG сюда больше не подклеивается: на вопросы по
-  // базе отвечает отдельная «Справочная» первым сообщением). known уходит структурой в payload.
-  private buildSystemPrompt(task: Task): string {
-    return task.task_description;
+  // Промпт шага сценария. По умолчанию RAG сюда не подмешивается — на вопросы по базе отвечает
+  // отдельная «Справочная» первым сообщением. Исключение — шаги с rag_enabled (см. конструктор,
+  // "сверяться с базой знаний"): им отдельно подмешивается контекст из базы под ПОСЛЕДНЕЕ сообщение
+  // клиента, чтобы шаг мог проверить "есть ли это вообще" перед тем, как считать цель достигнутой.
+  private async buildSystemPrompt(task: Task, botId: number, latestUserText: string): Promise<string> {
+    if (!task.rag_enabled || !latestUserText.trim()) return task.task_description;
+
+    let ragContext: string | null = null;
+    try {
+      ragContext = await this.ragSearchManager.buildContext(botId, latestUserText);
+    } catch (err) {
+      console.error("RAG buildContext failed (шаг с rag_enabled):", err);
+    }
+    if (!ragContext) return task.task_description;
+
+    return `${task.task_description}\n\nКОНТЕКСТ ИЗ БАЗЫ ЗНАНИЙ ПО ПОСЛЕДНЕМУ СООБЩЕНИЮ КЛИЕНТА:\n${ragContext}`;
   }
 
   // Срезает ведущее приветствие/самопредставление из ответа (для случая, когда клиент уже был

@@ -180,6 +180,7 @@ export interface StepInput {
   fieldName?: string;
   rules?: StepRule[];
   acceptsImage?: boolean;
+  ragEnabled?: boolean;
 }
 
 export async function generateProcess(

@@ -15,6 +15,7 @@ export interface StepFields {
   fieldName?: string;
   rules: StepRule[];
   acceptsImage?: boolean;
+  ragEnabled?: boolean;
 }
 
 export interface StepNodeData extends StepFields {
@@ -59,6 +60,11 @@ export function StepNode({ data }: NodeProps) {
           {d.acceptsImage && (
             <span className="text-[10px] bg-slate-100 text-slate-500 rounded-full px-2 py-0.5" title="Принимает фото">
               📷
+            </span>
+          )}
+          {d.ragEnabled && (
+            <span className="text-[10px] bg-slate-100 text-slate-500 rounded-full px-2 py-0.5" title="Сверяется с базой знаний">
+              📚
             </span>
           )}
         </div>

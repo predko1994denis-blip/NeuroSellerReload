@@ -12,6 +12,7 @@ export interface Task {
   required: boolean;
   is_fallback: boolean;
   accepts_image: boolean;
+  rag_enabled: boolean;
   title: string;
   context_strategy_id: number | null;
   created_at: Date;

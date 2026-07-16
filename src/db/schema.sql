@@ -55,6 +55,7 @@ CREATE TABLE tasks (
   required BOOLEAN NOT NULL DEFAULT true, -- при исчерпании попыток обязательный шаг ведёт в fallback, необязательный — просто дальше
   is_fallback BOOLEAN NOT NULL DEFAULT false, -- true у completion-задачи для случая "не смогли собрать обязательные данные"
   accepts_image BOOLEAN NOT NULL DEFAULT false, -- шаг умеет принимать фото как источник информации (см. ImageStepReader)
+  rag_enabled BOOLEAN NOT NULL DEFAULT false, -- шаг сверяется с базой знаний перед тем, как считать цель достигнутой
   title TEXT NOT NULL DEFAULT '', -- цель шага простым текстом (для ImageStepReader и логов, не для промпта LLM)
   context_strategy_id INTEGER,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

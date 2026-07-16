@@ -39,6 +39,7 @@ const emptyStep = (): StepFields & { [k: string]: unknown } => ({
   maxAttempts: 3,
   rules: [],
   acceptsImage: false,
+  ragEnabled: false,
 });
 
 function toStepInput(d: StepFields): StepInput {
@@ -49,6 +50,7 @@ function toStepInput(d: StepFields): StepInput {
     fieldName: d.fieldName?.trim() || undefined,
     rules: d.rules.filter((r) => r.text.trim()).map((r) => ({ type: r.type, text: r.text.trim() })),
     acceptsImage: d.acceptsImage ?? false,
+    ragEnabled: d.ragEnabled ?? false,
   };
 }
 
@@ -615,6 +617,15 @@ function NodePanel({
           onChange={(e) => onChange({ acceptsImage: e.target.checked })}
         />
         📷 Принимает фото как источник информации
+      </label>
+
+      <label className="flex items-center gap-1.5 text-sm text-slate-700">
+        <input
+          type="checkbox"
+          checked={data.ragEnabled ?? false}
+          onChange={(e) => onChange({ ragEnabled: e.target.checked })}
+        />
+        📚 Сверяться с базой знаний перед выполнением цели
       </label>
 
       <div className="border-t border-slate-200 pt-3">

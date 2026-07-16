@@ -123,6 +123,7 @@ async function generateAndSaveProcesses(
           required: proc.steps[i]?.required ?? true,
           is_fallback: t.is_fallback ?? false,
           accepts_image: proc.steps[i]?.acceptsImage ?? false,
+          rag_enabled: proc.steps[i]?.ragEnabled ?? false,
           title: t.title,
           context_strategy_id: null,
         });
@@ -501,6 +502,7 @@ async function generateProcess(request: Request, deps: AdminApiDeps): Promise<Re
       required: body.steps[i]!.required,
       is_fallback: t.is_fallback ?? false,
       accepts_image: body.steps[i]!.acceptsImage ?? false,
+      rag_enabled: body.steps[i]!.ragEnabled ?? false,
       title: t.title,
       context_strategy_id: null,
     });
@@ -757,6 +759,7 @@ async function createTask(request: Request, deps: AdminApiDeps): Promise<Respons
     required: true,
     is_fallback: false,
     accepts_image: false,
+    rag_enabled: false,
     title: "",
     context_strategy_id: body.context_strategy_id ?? null,
   });
