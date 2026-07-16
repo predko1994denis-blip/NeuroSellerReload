@@ -31,11 +31,19 @@ export class CrmLeadRepository {
     await sql`UPDATE crm_leads SET processed = true WHERE id = ${id}`;
   }
 
-  // Вызывается ровно в момент, когда MessageHandler решает, что диалог завершён (is_active=false) —
+  // Вызывается ровно в момент, когда MessageHandler решает, что диалог завершён (is_active=false).
   // isOrder=true только для настоящего completion, false для fallback/abort (см. вызов в MessageHandler).
-  // Молча ничего не делает, если у диалога вообще не было накоплено ни одного лид-поля (нет строки).
-  async markOrderStatus(dialogId: number, isOrder: boolean): Promise<void> {
-    await sql`UPDATE crm_leads SET is_order = ${isOrder} WHERE dialog_id = ${dialogId}`;
+  // information перезаписывается ПОЛНОСТЬЮ снимком dialog.known (накопленные слоты за весь диалог) —
+  // а не постепенным upsert()-накоплением по кусочкам, где в поле мог осесть сырой known_updates
+  // только последнего хода. Создаёт строку, если её ещё не было (диалог завершился без единого upsert).
+  async finalizeOrder(dialogId: number, isOrder: boolean, information: Record<string, unknown>): Promise<void> {
+    await sql`
+      INSERT INTO crm_leads (dialog_id, information, is_order)
+      VALUES (${dialogId}, ${sql.json(information as any)}, ${isOrder})
+      ON CONFLICT (dialog_id) DO UPDATE SET
+        information = ${sql.json(information as any)},
+        is_order = ${isOrder}
+    `;
   }
 
   // Заказы бота — только успешно завершённые лиды, вместе с bot_id/chat_id диалога (для UI/скоупа).

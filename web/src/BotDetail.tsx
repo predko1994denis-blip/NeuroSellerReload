@@ -449,6 +449,12 @@ function OrdersPanel({ botId, onClose }: { botId: number; onClose: () => void })
     return key.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
   }
 
+  function formatFieldValue(value: unknown): string {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "object") return JSON.stringify(value);
+    return String(value);
+  }
+
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center px-4 z-50" onClick={onClose}>
       <div
@@ -489,7 +495,7 @@ function OrdersPanel({ botId, onClose }: { botId: number; onClose: () => void })
                   )}
                   {Object.entries(o.information).map(([key, value]) => (
                     <div key={key}>
-                      <span className="font-medium text-slate-700">{formatFieldName(key)}:</span> {String(value)}
+                      <span className="font-medium text-slate-700">{formatFieldName(key)}:</span> {formatFieldValue(value)}
                     </div>
                   ))}
                 </div>

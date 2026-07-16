@@ -19,9 +19,10 @@ export class CRMManager {
   }
 
   // Вызывается ровно в момент завершения диалога (см. MessageHandler.applyTransition) —
-  // фиксирует, был ли это настоящий заказ (все параметры собраны) или обрыв/fallback.
-  async markCompletion(dialogId: number, isOrder: boolean): Promise<void> {
-    await this.crmLeadRepo.markOrderStatus(dialogId, isOrder);
+  // фиксирует, был ли это настоящий заказ (все параметры собраны) или обрыв/fallback, и сохраняет
+  // ПОЛНЫЙ снимок known (все накопленные слоты за весь диалог), а не по-кусочное накопление upsert().
+  async markCompletion(dialogId: number, isOrder: boolean, known: Record<string, string>): Promise<void> {
+    await this.crmLeadRepo.finalizeOrder(dialogId, isOrder, known);
   }
 
   // Вызывается, когда диалог завершён (is_active=false) — финальный экспорт в AmoCRM

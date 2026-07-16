@@ -485,7 +485,10 @@ ${ragContext}`;
       });
       // is_fallback=true — это "не разобрались, менеджер свяжется", НЕ настоящий заказ.
       // is_fallback=false — все параметры собраны штатно, это и есть заказ.
-      await this.crmManager.markCompletion(dialog.id, !task.is_fallback);
+      // dialog.known на этот момент уже содержит все накопленные за диалог слоты (absorbKnown
+      // отработал раньше в этом же ходе) — это и есть полная картина для "Заказов", а не
+      // по-кусочный upsert() в crm_leads.information.
+      await this.crmManager.markCompletion(dialog.id, !task.is_fallback, this.toKnown(dialog.known));
       return { dialog: updated, taskChanged: false };
     }
 
