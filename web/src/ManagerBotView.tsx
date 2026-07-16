@@ -8,12 +8,14 @@ import {
   takeoverDialog,
   releaseDialog,
   sendDialogMessage,
+  listOrders,
   type Bot,
   type DialogSummary,
   type DialogMessage,
+  type Order,
 } from "./api";
 
-type Tab = "dialogs" | "stats";
+type Tab = "dialogs" | "orders" | "stats";
 
 export function ManagerBotView({ bot, onBack }: { bot: Bot; onBack?: () => void }) {
   const [tab, setTab] = useState<Tab>("dialogs");
@@ -37,13 +39,22 @@ export function ManagerBotView({ bot, onBack }: { bot: Bot; onBack?: () => void 
           <SegTab active={tab === "dialogs"} onClick={() => setTab("dialogs")}>
             Диалоги
           </SegTab>
+          <SegTab active={tab === "orders"} onClick={() => setTab("orders")}>
+            Заказы
+          </SegTab>
           <SegTab active={tab === "stats"} onClick={() => setTab("stats")}>
             Статистика
           </SegTab>
         </div>
       </div>
 
-      {tab === "dialogs" ? <DialogsTab botId={bot.id} /> : <StatsStub botId={bot.id} />}
+      {tab === "dialogs" ? (
+        <DialogsTab botId={bot.id} />
+      ) : tab === "orders" ? (
+        <OrdersTab botId={bot.id} />
+      ) : (
+        <StatsStub botId={bot.id} />
+      )}
     </main>
   );
 }
@@ -506,6 +517,69 @@ function MessageBubble({ message, onChanged }: { message: DialogMessage; onChang
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ─────────────── Заказы ─────────────── */
+
+function OrdersTab({ botId }: { botId: number }) {
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    listOrders(botId)
+      .then(setOrders)
+      .catch((e) => setError(e instanceof Error ? e.message : "Ошибка"))
+      .finally(() => setLoading(false));
+  }, [botId]);
+
+  if (loading) return <div className="text-slate-400 text-sm">Загрузка…</div>;
+  if (error) return <ErrorBox text={error} />;
+  if (orders.length === 0)
+    return (
+      <EmptyBox emoji="📦" title="Пока нет заказов" subtitle="Как только диалог дойдёт до конца со всеми собранными данными — заказ появится здесь." />
+    );
+
+  function formatFieldName(key: string): string {
+    return key.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
+  }
+
+  function formatFieldValue(value: unknown): string {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "object") return JSON.stringify(value);
+    return String(value);
+  }
+
+  return (
+    <div className="ns-fade-in grid grid-cols-1 sm:grid-cols-2 gap-4">
+      {orders.map((o) => (
+        <div key={o.id} className="bg-white rounded-2xl border border-slate-200 p-4">
+          <div className="flex flex-col gap-1 text-sm">
+            {o.name && (
+              <div>
+                <span className="font-medium text-slate-700">Имя:</span> {o.name}
+              </div>
+            )}
+            {o.phone && (
+              <div>
+                <span className="font-medium text-slate-700">Телефон:</span> {o.phone}
+              </div>
+            )}
+            {Object.entries(o.information).map(([key, value]) => (
+              <div key={key}>
+                <span className="font-medium text-slate-700">{formatFieldName(key)}:</span> {formatFieldValue(value)}
+              </div>
+            ))}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-3">
+            {new Date(o.created_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
