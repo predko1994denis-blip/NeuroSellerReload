@@ -102,7 +102,7 @@ function BotCard({ bot, isAdmin, onClick }: { bot: Bot; isAdmin: boolean; onClic
     >
       <div className="flex items-start justify-between">
         <div className="font-semibold text-slate-900">
-          {bot.company_name || `Бот #${bot.id}`}
+          {bot.company_name || "Бот"}
         </div>
         {isAdmin && (
           <div className="flex flex-col items-end gap-1">
