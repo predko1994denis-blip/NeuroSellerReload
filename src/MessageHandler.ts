@@ -116,7 +116,7 @@ export class MessageHandler {
 
     // ── ОТДЕЛ 2: «Менеджер» ── ведёт свою задачу сценария (без RAG-логики, только known).
     let parsed = await this.requestParsed(
-      await this.buildSystemPrompt(task, botId, text),
+      await this.buildSystemPrompt(task, botId, text, historyItems),
       {
         latest_user_message: text,
         greeted: greetedForThisRequest,
@@ -179,12 +179,12 @@ export class MessageHandler {
       task = await this.loadTask(dialog);
       const followHistory = await this.messageRepo.findByDialogId(dialog.id);
 
-      const followSystemPrompt = await this.buildSystemPrompt(task, botId, text);
-
       // Ответ предыдущего шага ещё НЕ записан в БД (сохраняется один раз после цикла). Без него
       // follow-up шаг не видит, что имя уже обработано, и «начинает заново» — здоровается и
       // спрашивает обобщённо вместо подтверждения товара. Подмешиваем его в историю запроса.
       const followHistoryForReq = followHistory.map((m) => ({ role: m.role, content: m.content ?? "" }));
+
+      const followSystemPrompt = await this.buildSystemPrompt(task, botId, text, followHistoryForReq);
       if (responseText) followHistoryForReq.push({ role: "assistant" as const, content: responseText });
 
       parsed = await this.requestParsed(
@@ -249,12 +249,27 @@ export class MessageHandler {
   // отдельная «Справочная» первым сообщением. Исключение — шаги с rag_enabled (см. конструктор,
   // "сверяться с базой знаний"): им отдельно подмешивается контекст из базы под ПОСЛЕДНЕЕ сообщение
   // клиента, чтобы шаг мог проверить "есть ли это вообще" перед тем, как считать цель достигнутой.
-  private async buildSystemPrompt(task: Task, botId: number, latestUserText: string): Promise<string> {
+  private async buildSystemPrompt(
+    task: Task,
+    botId: number,
+    latestUserText: string,
+    recentHistory: LLMHistoryItem[] = []
+  ): Promise<string> {
     if (!task.rag_enabled || !latestUserText.trim()) return task.task_description;
+
+    // Короткие уточняющие реплики («Д-243», «а это для какой тачки?») сами по себе плохо
+    // находятся эмбеддинг-поиском в отрыве от темы разговора — подмешиваем хвост истории
+    // в поисковый запрос, чтобы поиск понимал контекст, а не искал по голой фразе.
+    const contextTail = recentHistory
+      .slice(-4)
+      .map((m) => m.content)
+      .filter(Boolean)
+      .join(" ");
+    const ragQuery = contextTail ? `${contextTail} ${latestUserText}` : latestUserText;
 
     let ragContext: string | null = null;
     try {
-      ragContext = await this.ragSearchManager.buildContext(botId, latestUserText);
+      ragContext = await this.ragSearchManager.buildContext(botId, ragQuery);
     } catch (err) {
       console.error("RAG buildContext failed (шаг с rag_enabled):", err);
     }
