@@ -15,6 +15,22 @@ export class TelegramAdapter implements IChannelAdapter {
     }
   }
 
+  // «Печатает…» в шапке чата — Telegram сам гасит индикатор через ~5 сек или при отправке
+  // сообщения, поэтому для долгой обработки его нужно посылать повторно (см. telegramWebhook.ts).
+  // Не критично для основного потока — при сбое просто логируем, не рушим обработку сообщения.
+  async sendChatAction(chatId: string, action: string = "typing"): Promise<void> {
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${this.botToken}/sendChatAction`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, action }),
+      });
+      if (!res.ok) console.error(`Telegram sendChatAction failed: ${res.status} ${await res.text()}`);
+    } catch (err) {
+      console.error("Telegram sendChatAction failed:", err);
+    }
+  }
+
   // Скачивает фото по file_id: сперва узнаём file_path через getFile, потом качаем сами байты.
   async downloadPhoto(fileId: string): Promise<{ buffer: Buffer; mimeType: string }> {
     const infoRes = await fetch(`https://api.telegram.org/bot${this.botToken}/getFile?file_id=${fileId}`);

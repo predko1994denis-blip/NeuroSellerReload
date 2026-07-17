@@ -26,14 +26,23 @@ export async function handleTelegramWebhook(
   // неуспешной и повторно шлёт ТО ЖЕ САМОЕ сообщение с нарастающим интервалом — эти ретраи
   // встают в общую очередь обработки чата и блокируют все следующие сообщения того же чата
   // (например, /clear), пока не перестанут падать.
+  // «Печатает…» в шапке чата на всё время обработки — LLM-вызовы могут занять несколько секунд,
+  // а индикатор Telegram сам гаснет через ~5 сек, поэтому обновляем его периодически.
+  adapter.sendChatAction(extracted.chatId, "typing").catch(() => {});
+  const typingTimer = setInterval(() => {
+    adapter.sendChatAction(extracted.chatId, "typing").catch(() => {});
+  }, 4000);
+
   try {
     const image = extracted.photoFileId ? await adapter.downloadPhoto(extracted.photoFileId) : undefined;
     // processMessage возвращает массив пузырей: [ответ по базе, реплика сценария] — шлём по очереди.
     const messages = await messageHandler.processMessage(bot.id, extracted.chatId, extracted.text, image);
+    clearInterval(typingTimer);
     for (const msg of messages) {
       await adapter.sendMessage(extracted.chatId, msg);
     }
   } catch (err) {
+    clearInterval(typingTimer);
     console.error("Ошибка обработки сообщения Telegram:", err);
     await adapter
       .sendMessage(extracted.chatId, "Сейчас небольшие технические неполадки — напишите, пожалуйста, чуть позже.")
